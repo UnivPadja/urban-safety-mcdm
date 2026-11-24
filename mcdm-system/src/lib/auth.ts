@@ -57,3 +57,22 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   PJU: "Penanggung Jawab Umum",
   ADMIN: "Admin sistem",
 };
+
+export function getClientUser(): UserResponse | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const match = document.cookie
+      .split("; ")
+      .find((row) => row.startsWith("auth_session="));
+    if (match) {
+      const session = JSON.parse(decodeURIComponent(match.split("=")[1]));
+      return session?.user || null;
+    }
+  } catch {}
+  return null;
+}
+
+export function isPrivilegedRole(role?: UserRole | string): boolean {
+  if (!role) return false;
+  return role === "ADMIN" || role === "PJU" || role === "PENANGGUNG_JAWAB_UMUM";
+}

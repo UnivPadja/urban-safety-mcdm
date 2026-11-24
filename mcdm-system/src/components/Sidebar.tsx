@@ -104,7 +104,10 @@ export default function Sidebar({ user: propUser }: SidebarProps) {
   const penilaiNavItems = navItems.filter(
     (item) => !(item.href === "/pendataan" && currentUser.role === "PENILAI")
   );
-  const isAdmin = currentUser.role === "ADMIN";
+  const showAkunAkses =
+    currentUser.role === "ADMIN" ||
+    currentUser.username === "admin" ||
+    pathname.startsWith("/akun-akses");
 
   return (
     <aside className="w-[230px] h-screen sticky top-0 bg-white border-r border-zinc-200/80 flex flex-col justify-between shrink-0 p-5 z-20 select-none">
@@ -148,12 +151,14 @@ export default function Sidebar({ user: propUser }: SidebarProps) {
             <span>Riwayat</span>
           </Link>
 
-          {isAdmin && (
-            <Link href="/akun-akses" className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] transition text-left cursor-pointer ${pathname.startsWith("/akun-akses") ? "bg-[#edf4f0] text-[#1a5b3e] font-medium" : "text-zinc-600 hover:bg-zinc-100 font-normal"}`}>
-              <svg className={`w-4 h-4 ${pathname.startsWith("/akun-akses") ? "text-[#1a5b3e]" : "text-zinc-400"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M16 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2m6-10a4 4 0 100-8 4 4 0 000 8zm10 10v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+          {showAkunAkses && (
+            <Link href="/akun-akses"
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] transition text-left cursor-pointer ${ pathname.startsWith("/akun-akses") ? "bg-[#edf4f0] text-[#1a5b3e] font-medium" : "text-zinc-600 hover:bg-zinc-100 font-normal" }`}
+            >
+              <svg className={`w-4 h-4 ${ pathname.startsWith("/akun-akses") ? "text-[#1a5b3e]" : "text-zinc-400" }`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
               </svg>
-              <span>Akun dan Akses</span>
+              <span>Akun & akses</span>
             </Link>
           )}
         </nav>
@@ -162,7 +167,11 @@ export default function Sidebar({ user: propUser }: SidebarProps) {
       <div className="pt-4 border-t border-zinc-100 flex items-center justify-between">
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-8 h-8 rounded-full bg-[#edf4f0] text-[#1a5b3e] text-xs font-bold flex items-center justify-center shrink-0">
-            {currentUser.role === "PJU" ? "PJ" : (currentUser.username || "OP").substring(0, 2).toUpperCase()}
+            {currentUser.role === "ADMIN"
+              ? "AD"
+              : currentUser.role === "PJU"
+              ? "PJ"
+              : (currentUser.username || "US").substring(0, 2).toUpperCase()}
           </div>
           <div className="min-w-0">
             <p className="text-[12px] font-semibold text-zinc-800 leading-tight truncate">{currentUser.full_name || "Penanggung Jawab Umum"}</p>

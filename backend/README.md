@@ -52,6 +52,7 @@ Atau langsung menyertakan parameter password:
 ```
 
 Skrip ini akan otomatis:
+
 1. Mengecek dan membuat database `dss_jatinangor` lewat `psql` jika belum ada.
 2. Membuat/memperbarui `backend/.env` dengan `DATABASE_URL="postgresql+psycopg://postgres:...@localhost:5432/dss_jatinangor"`.
 3. Menjalankan `python -m app.db_setup` untuk memastikan skema database tersedia, mengisi data seed awal, dan menampilkan jumlah baris tiap tabel.
@@ -61,17 +62,21 @@ Skrip ini akan otomatis:
 ### Opsi B — Setup Manual Langkah demi Langkah
 
 1. **Buat database PostgreSQL:**
+
    ```powershell
    psql -U postgres -h localhost -p 5432 -c "CREATE DATABASE dss_jatinangor;"
    ```
-   *(Atau buat database `dss_jatinangor` melalui pgAdmin 4 / DBeaver / Supabase Dashboard).*
 
+   *(Atau buat database `dss_jatinangor` melalui pgAdmin 4 / DBeaver / Supabase Dashboard).*
 2. **Buat dan konfigurasi `backend/.env`:**
+
    ```powershell
    cd backend
    Copy-Item .env.example .env
    ```
+
    Edit `backend/.env` dan ubah `DATABASE_URL` menjadi kredensial PostgreSQL Anda (driver `psycopg` v3 sudah terpasang di `requirements.txt`):
+
    ```env
    # Contoh PostgreSQL Lokal:
    DATABASE_URL="postgresql+psycopg://postgres:PASSWORD_ANDA@localhost:5432/dss_jatinangor"
@@ -79,20 +84,24 @@ Skrip ini akan otomatis:
    # Contoh Supabase PostgreSQL:
    # DATABASE_URL="postgresql+psycopg://postgres.PROJECT_REF:PASSWORD_ANDA@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres"
    ```
-   > **Tips karakter spesial password:** Jika password mengandung karakter seperti `@`, `#`, `:`, atau `/`, lakukan URL-encoding (mis. `@` menjadi `%40`) pada string `DATABASE_URL`.
 
+   > **Tips karakter spesial password:** Jika password mengandung karakter seperti `@`, `#`, `:`, atau `/`, lakukan URL-encoding (mis. `@` menjadi `%40`) pada string `DATABASE_URL`.
+   >
 3. **Pastikan environment Python aktif dan dependensi terpasang:**
+
    ```powershell
    python -m venv .venv
    .\.venv\Scripts\Activate.ps1
    pip install -r requirements.txt
    ```
-
 4. **Inisialisasi skema, seed data awal, dan verifikasi koneksi:**
+
    ```powershell
    python -m app.db_setup
    ```
+
    Contoh output sukses:
+
    ```text
    [DB Setup] Target dialect : postgresql
    [DB Setup] Target URL     : postgresql+psycopg://postgres:***@localhost:5432/dss_jatinangor
@@ -111,15 +120,15 @@ Skrip ini akan otomatis:
      - cycle_ranking_results    : 0
      - worklist_decisions       : 0
    ```
-
 5. **(Opsional) Menggunakan Migrasi Alembic:**
    Konfigurasi `alembic/env.py` otomatis membaca `DATABASE_URL` dari `.env`:
+
    ```powershell
    alembic revision --autogenerate -m "initial_schema"
    alembic upgrade head
    ```
-
 6. **Verifikasi langsung lewat `psql`:**
+
    ```powershell
    psql -U postgres -h localhost -d dss_jatinangor -c "\dt"
    psql -U postgres -h localhost -d dss_jatinangor -c "SELECT id, username, email, role FROM users;"
@@ -139,7 +148,7 @@ Skrip ini akan otomatis:
 | `segment_criterion_values` | Nilai untuk kriteria tambahan pada setiap segmen |
 | `evaluation_cycles` | Riwayat eksekusi siklus TOPSIS beserta snapshot bobot |
 | `cycle_ranking_results` | Hasil normalisasi, matriks terbobot, $D^+$, $D^-$, skor preferensi $V_i$, peringkat, & alasan ineligibel |
-| `worklist_decisions` | Keputusan daftar kerja final, kuota kapasitas $K$, flag override, & audit alasan perubahan |
+| `worklist_decisions`    | Keputusan daftar kerja final, kuota kapasitas $K$, flag override, & audit alasan perubahan                   |
 
 ### Troubleshooting Koneksi PostgreSQL
 
@@ -160,6 +169,7 @@ cd backend
 ```
 
 Dokumentasi interaktif tersedia di:
+
 - Swagger UI: `http://localhost:8000/docs`
 - OpenAPI JSON: `http://localhost:8000/openapi.json`
 - PDF Dokumentasi API: `backend/API_Documentation_DSS_Jatinangor.pdf`
@@ -170,12 +180,12 @@ Dokumentasi interaktif tersedia di:
 
 Login (`POST /api/v1/auth/login`) mendukung **Email** maupun **Username** (selaras dengan layar Figma `00 · Masuk`):
 
-| Username | Email | Password | Role RBAC |
-| :--- | :--- | :--- | :--- |
-| `admin` | `admin@jatinangor-dss.id` | `admin123` | `ADMIN` |
-| `operator` | `operator@jatinangor-dss.id` | `operator123` | `OPERATOR` |
-| `penilai` | `penilai@jatinangor-dss.id` | `penilai123` | `PENILAI` |
-| `pju_lead` | `pju.lead@jatinangor-dss.id` | `pju123` | `PENANGGUNG_JAWAB_PJU` |
+| Username     | Email                          | Password        | Role RBAC                |
+| :----------- | :----------------------------- | :-------------- | :----------------------- |
+| `admin`    | `admin@jatinangor-dss.id`    | `admin123`    | `ADMIN`                |
+| `operator` | `operator@jatinangor-dss.id` | `operator123` | `OPERATOR`             |
+| `penilai`  | `penilai@jatinangor-dss.id`  | `penilai123`  | `PENILAI`              |
+| `pju_lead` | `pju.lead@jatinangor-dss.id` | `pju123`      | `PENANGGUNG_JAWAB_PJU` |
 
 ---
 

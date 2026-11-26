@@ -147,7 +147,7 @@ def calculate_topsis(
         values_by_item.append(values)
     X = np.asarray(values_by_item, dtype=np.float64)
 
-    # 1. Euclidean vector normalization (safe against zero-norm columns)
+    # Guard against zero-norm columns when all segments have 0 for a criterion
     col_norms = np.sqrt(np.sum(X**2, axis=0))
     R = np.zeros_like(X, dtype=np.float64)
     for j in range(n):
@@ -156,10 +156,8 @@ def calculate_topsis(
         else:
             R[:, j] = 0.0
 
-    # 2. Weighted normalized matrix
     V = R * w
 
-    # Edge case: single eligible segment
     if m == 1:
         item = items[0]
         normalized_values = {
@@ -202,11 +200,9 @@ def calculate_topsis(
             a_plus[j] = float(np.min(V[:, j]))
             a_minus[j] = float(np.max(V[:, j]))
 
-    # 4. Euclidean distances D+ and D-
     d_plus = np.sqrt(np.sum((V - a_plus) ** 2, axis=1))
     d_minus = np.sqrt(np.sum((V - a_minus) ** 2, axis=1))
 
-    # 5. Preference score C_i = D- / (D+ + D-), 0.0 when denominator is 0
     denom = d_plus + d_minus
     scores = np.where(denom > 0.0, d_minus / denom, 0.0)
 
@@ -279,5 +275,4 @@ def calculate_topsis(
                 is_tie_broken=row["is_tie_broken"],
             )
         )
-
     return ranked_results

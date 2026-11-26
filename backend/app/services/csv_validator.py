@@ -108,7 +108,6 @@ def validate_csv_observations(
         raw_code = str(row["segment_code"]).strip().upper()
         issues: list[dict[str, str]] = []
 
-        # 1. Segment code checks
         if not raw_code:
             issues.append(
                 {
@@ -135,7 +134,6 @@ def validate_csv_observations(
                     }
                 )
 
-        # 2. Numeric indicators parsing
         total_lights: int | None = None
         broken_lights: int | None = None
         dawn_crime_count: int | None = None
@@ -208,7 +206,7 @@ def validate_csv_observations(
                 }
             )
 
-        # 3. Dawn crime count (nullable during staging -> WARNING if missing, ERROR if negative/invalid)
+        # Missing dawn_crime_count is a WARNING during staging, but blocks TOPSIS eligibility until filled
         try:
             dawn_crime_count, missing_crime = _parse_int(str(row["dawn_crime_count"]))
             if missing_crime:
@@ -236,7 +234,6 @@ def validate_csv_observations(
                 }
             )
 
-        # 4. Boarding house count
         try:
             boarding_house_count, missing_boarding = _parse_int(
                 str(row["boarding_house_count"])
@@ -266,7 +263,6 @@ def validate_csv_observations(
                 }
             )
 
-        # 5. Inspection date & expiry check
         criteria_values: dict[str, float | None] = {}
         for key in dynamic_keys:
             raw_value = str(row[key]).strip()
@@ -287,7 +283,7 @@ def validate_csv_observations(
                     }
                 )
 
-        # 6. Inspection date & expiry check
+        # 5. Inspection date & expiry check
         parsed_date_str: str | None = None
         try:
             parsed_date = _parse_date(str(row["inspection_date"]))

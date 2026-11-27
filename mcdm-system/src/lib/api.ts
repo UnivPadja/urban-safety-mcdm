@@ -1,4 +1,5 @@
 import { SegmentItem } from "../components/PriorityMap";
+import { UserRole } from "./auth";
 
 export const BACKEND_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_API_URL || "http://localhost:8000/api/v1";
@@ -387,7 +388,7 @@ export async function updateSegment(
 }
 
 // -------------------------------------------------------------
-// 2. PENDATAAN & CSV IMPORT
+// 2. PENDATAAN OBSERVASI LAPANGAN
 // -------------------------------------------------------------
 export interface ObservationFormRequest {
   segment_id?: number | null;
@@ -404,60 +405,6 @@ export interface ObservationFormResponse {
   warnings?: string[];
 }
 
-export interface CSVValidationIssue {
-  code: string;
-  severity: "WARNING" | "ERROR";
-  message: string;
-}
-
-export interface CSVValidatedRow {
-  row_number: number;
-  segment_code: string;
-  total_lights: number | null;
-  broken_lights: number | null;
-  dawn_crime_count: number | null;
-  boarding_house_count: number | null;
-  inspection_date: string | null;
-  status: "VALID" | "WARNING" | "ERROR";
-  issues?: CSVValidationIssue[];
-  messages?: string[];
-}
-
-export interface CSVUploadPreviewResponse {
-  batch_id: string;
-  filename: string;
-  status: "PENDING_CONFIRMATION" | "CONFIRMED" | "CANCELLED";
-  total_rows: number;
-  valid_rows: number;
-  warning_rows: number;
-  error_rows: number;
-  rows: CSVValidatedRow[];
-  created_at: string;
-}
-
-export interface CSVRowCorrection {
-  row_number: number;
-  segment_code: string;
-  total_lights: number;
-  broken_lights: number;
-  dawn_crime_count?: number | null;
-  boarding_house_count: number;
-  inspection_date: string;
-}
-
-export interface CSVConfirmRequest {
-  include_warnings?: boolean;
-  corrections?: CSVRowCorrection[];
-}
-
-export interface CSVConfirmResponse {
-  batch_id: string;
-  status: "PENDING_CONFIRMATION" | "CONFIRMED" | "CANCELLED";
-  committed_count: number;
-  skipped_error_count: number;
-  committed_segment_codes: string[];
-}
-
 export async function submitObservationForm(
   payload: ObservationFormRequest
 ): Promise<ObservationFormResponse> {
@@ -469,43 +416,6 @@ export async function submitObservationForm(
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Gagal menyimpan formulir observasi.");
-  }
-  return await res.json();
-}
-
-export async function uploadCSVObservation(
-  file: File
-): Promise<CSVUploadPreviewResponse> {
-  const formData = new FormData();
-  formData.append("file", file);
-
-  const res = await fetch(`${BACKEND_API_URL}/observations/upload-csv`, {
-    method: "POST",
-    headers: getAuthHeaders(),
-    body: formData,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Gagal mengunggah berkas CSV.");
-  }
-  return await res.json();
-}
-
-export async function confirmCSVBatch(
-  batchId: string,
-  payload: CSVConfirmRequest = { include_warnings: true }
-): Promise<CSVConfirmResponse> {
-  const res = await fetch(
-    `${BACKEND_API_URL}/observations/batches/${batchId}/confirm`,
-    {
-      method: "POST",
-      headers: getAuthHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(payload),
-    }
-  );
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Gagal mengonfirmasi batch CSV.");
   }
   return await res.json();
 }
@@ -959,4 +869,141 @@ export async function getSegmentsData(
       ? fallbackData.filter((s) => s.corridor === corridor)
       : fallbackData;
   return { segments: filteredFallback };
+}
+
+export interface AppUserAccount {
+  id: number;
+  username: string;
+  email: string;
+  full_name: string;
+  role: UserRole;
+  is_active: boolean;
+  created_at: string;
+  main_permission?: string;
+}
+
+export const DEFAULT_APP_USERS: AppUserAccount[] = [
+  {
+    id: 1,
+    username: "penilai",
+    email: "penilai@dss.local",
+    full_name: "Penilai kriteria",
+    role: "PENILAI",
+    is_active: true,
+    created_at: "2026-11-01T00:00:00Z",
+    main_permission: "Nilai dan aktifkan bobot AHP",
+  },
+  {
+    id: 2,
+    username: "pju_lead",
+    email: "pju@dss.local",
+    full_name: "Penanggung Jawab Umum",
+    role: "PJU",
+    is_active: true,
+    created_at: "2026-11-01T00:00:00Z",
+    main_permission: "Tetapkan daftar kerja PJU",
+  },
+  {
+    id: 3,
+    username: "admin",
+    email: "admin@dss.local",
+    full_name: "Admin sistem",
+    role: "ADMIN",
+    is_active: true,
+    created_at: "2026-11-01T00:00:00Z",
+    main_permission: "Kelola akun dan izin",
+  },
+];
+
+export function getRoleMainPermission(role: UserRole): string {
+  switch (role) {
+    case "PENILAI":
+      return "Nilai dan aktifkan bobot AHP";
+    case "PJU":
+      return "Tetapkan daftar kerja PJU";
+    case "ADMIN":
+      return "Kelola akun dan izin";
+    default:
+      return "Akses baca";
+  }
+}
+
+export async function fetchUsers(): Promise<AppUserAccount[]> {
+  try {
+    const res = await fetch(`${BACKEND_API_URL}/users`, {
+      headers: getAuthHeaders({ "Content-Type": "application/json" }),
+    });
+    if (res.ok) {
+      const users: any[] = await res.json();
+      return users.map((u) => ({
+        id: u.id,
+        username: u.username,
+        email: u.email,
+        full_name: u.full_name,
+        role: u.role,
+        is_active: u.is_active,
+        created_at: u.created_at,
+        main_permission: getRoleMainPermission(u.role),
+      }));
+    }
+  } catch {}
+
+  if (typeof window !== "undefined") {
+    try {
+      const saved = localStorage.getItem("dss_users_cache");
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {}
+  }
+  return DEFAULT_APP_USERS;
+}
+
+export async function updateUserRole(
+  userId: number,
+  role: UserRole
+): Promise<AppUserAccount> {
+  try {
+    const res = await fetch(`${BACKEND_API_URL}/users/${userId}`, {
+      method: "PATCH",
+      headers: getAuthHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ role }),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      const userRes: AppUserAccount = {
+        id: updated.id,
+        username: updated.username,
+        email: updated.email,
+        full_name: updated.full_name,
+        role: updated.role,
+        is_active: updated.is_active,
+        created_at: updated.created_at,
+        main_permission: getRoleMainPermission(updated.role),
+      };
+      if (typeof window !== "undefined") {
+        try {
+          const current = await fetchUsers();
+          const next = current.map((u) => (u.id === userId ? userRes : u));
+          localStorage.setItem("dss_users_cache", JSON.stringify(next));
+        } catch {}
+      }
+      return userRes;
+    }
+  } catch {}
+
+  const current = typeof window !== "undefined" ? await fetchUsers() : [...DEFAULT_APP_USERS];
+  const target = current.find((u) => u.id === userId) || DEFAULT_APP_USERS[0];
+  const updatedTarget: AppUserAccount = {
+    ...target,
+    role,
+    main_permission: getRoleMainPermission(role),
+  };
+  if (typeof window !== "undefined") {
+    try {
+      const next = current.map((u) => (u.id === userId ? updatedTarget : u));
+      localStorage.setItem("dss_users_cache", JSON.stringify(next));
+    } catch {}
+  }
+  return updatedTarget;
 }

@@ -1,6 +1,7 @@
-"""Pydantic v2 schemas for all 8 DSS functional modules."""
+"""Skema validasi request dan response Pydantic v2 untuk seluruh modul DSS."""
 
 from datetime import date, datetime
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
@@ -12,50 +13,90 @@ from app.models.models import (
     DataSourceEnum,
     UserRole,
 )
+from app.services.ahp_engine import MAX_CRITERIA, MIN_CRITERIA
+
+_CRITERION_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,49}$")
 
 
 def _validate_position(pos: Any) -> None:
     if not isinstance(pos, (list, tuple)) or len(pos) < 2:
-        raise ValueError("Setiap titik koordinat GeoJSON harus berupa array [longitude, latitude].")
+        raise ValueError(
+            "Setiap titik koordinat GeoJSON harus berupa array [longitude, latitude]."
+        )
     lon, lat = pos[0], pos[1]
     if not isinstance(lon, (int, float)) or not isinstance(lat, (int, float)):
         raise ValueError("Koordinat longitude dan latitude harus berupa angka.")
     if not (-180.0 <= float(lon) <= 180.0) or not (-90.0 <= float(lat) <= 90.0):
-        raise ValueError("Koordinat berada di luar rentang valid bumi (lon: [-180,180], lat: [-90,90]).")
+        raise ValueError(
+            "Koordinat berada di luar rentang valid bumi (lon: [-180,180], lat: [-90,90])."
+        )
+
+
+class PinPoint(BaseModel):
+    """Koordinat titik pin representatif segmen dalam format WGS84 (lat/lon)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"lat": -6.933572, "lon": 107.775454}}
+    )
+
+    lat: float = Field(..., ge=-90.0, le=90.0, description="Latitude WGS84")
+    lon: float = Field(..., ge=-180.0, le=180.0, description="Longitude WGS84")
 
 
 class GeoJSONGeometry(BaseModel):
-    """GeoJSON geometry supporting LineString and Polygon."""
+    """Geometri GeoJSON yang menerima tipe Point, LineString, atau Polygon."""
 
-    type: Literal["LineString", "Polygon"]
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "type": "LineString",
+                "coordinates": [
+                    [107.775007, -6.932916],
+                    [107.77543, -6.933538],
+                    [107.775691, -6.934223],
+                ],
+            }
+        }
+    )
+
+    type: Literal["Point", "LineString", "Polygon"]
     coordinates: list[Any]
 
     @model_validator(mode="after")
     def validate_coordinates(self) -> "GeoJSONGeometry":
-        if self.type == "LineString":
+        if self.type == "Point":
+            _validate_position(self.coordinates)
+        elif self.type == "LineString":
             if len(self.coordinates) < 2:
-                raise ValueError("Geometri LineString wajib memiliki minimal 2 titik koordinat.")
+                raise ValueError(
+                    "Geometri LineString wajib memiliki minimal 2 titik koordinat."
+                )
             for pt in self.coordinates:
                 _validate_position(pt)
         elif self.type == "Polygon":
             if len(self.coordinates) < 1:
-                raise ValueError("Geometri Polygon wajib memiliki minimal 1 ring koordinat.")
+                raise ValueError(
+                    "Geometri Polygon wajib memiliki minimal 1 ring koordinat."
+                )
             for ring in self.coordinates:
                 if not isinstance(ring, list) or len(ring) < 4:
-                    raise ValueError("Setiap ring Polygon wajib memiliki minimal 4 titik koordinat.")
+                    raise ValueError(
+                        "Setiap ring Polygon wajib memiliki minimal 4 titik koordinat."
+                    )
                 for pt in ring:
                     _validate_position(pt)
                 if ring[0][:2] != ring[-1][:2]:
-                    raise ValueError("Ring Polygon wajib tertutup (titik awal sama dengan titik akhir).")
+                    raise ValueError(
+                        "Ring Polygon wajib tertutup (titik awal sama dengan titik akhir)."
+                    )
         return self
 
 
-# ---------------------------------------------------------------------------
-# Modul 1: Auth & Users
-# ---------------------------------------------------------------------------
-
-
 class LoginRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"username": "penilai", "password": "penilai123"}}
+    )
+
     username: str | None = Field(default=None, min_length=1, max_length=255)
     email: EmailStr | None = None
     password: str = Field(..., min_length=1)
@@ -86,6 +127,19 @@ class TokenResponse(BaseModel):
 
 
 class UserCreateRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "username": "operator_ciseke",
+                "email": "operator.ciseke@jatinangor-dss.id",
+                "full_name": "Operator Lapangan Ciseke",
+                "password": "password123",
+                "role": "OPERATOR",
+                "is_active": True,
+            }
+        }
+    )
+
     username: str = Field(..., min_length=3, max_length=50)
     email: EmailStr
     full_name: str = Field(..., min_length=2, max_length=150)
@@ -101,11 +155,6 @@ class UserUpdateRequest(BaseModel):
     password: str | None = Field(default=None, min_length=6, max_length=128)
 
 
-# ---------------------------------------------------------------------------
-# Modul 2: Alley Segments
-# ---------------------------------------------------------------------------
-
-
 class ObservationBriefResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -115,6 +164,7 @@ class ObservationBriefResponse(BaseModel):
     broken_lights: int
     dawn_crime_count: int | None
     boarding_house_count: int
+    criteria_values: dict[str, float | None] = Field(default_factory=dict)
     inspection_date: date
     data_source: DataSourceEnum
     updated_by: int
@@ -122,10 +172,34 @@ class ObservationBriefResponse(BaseModel):
 
 
 class SegmentCreateRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "segment_code": "GG-CSK-004",
+                "name": "Gang Ciseke Masjid Al-Ikhlas",
+                "corridor": "Ciseke",
+                "geojson_geometry": {
+                    "type": "LineString",
+                    "coordinates": [
+                        [107.7751, -6.9331],
+                        [107.7754, -6.9335],
+                        [107.7757, -6.9339],
+                    ],
+                },
+                "pin_point": {"lat": -6.9335, "lon": 107.7754},
+                "is_active": True,
+            }
+        }
+    )
+
     segment_code: str = Field(..., min_length=3, max_length=50)
     name: str = Field(..., min_length=3, max_length=200)
     corridor: CorridorEnum
     geojson_geometry: GeoJSONGeometry
+    pin_point: PinPoint | None = Field(
+        default=None,
+        description="Koordinat pin kustom opsional; jika dikosongkan dihitung otomatis dari geojson_geometry.",
+    )
     is_active: bool = True
 
     @field_validator("segment_code")
@@ -138,6 +212,14 @@ class SegmentUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=3, max_length=200)
     corridor: CorridorEnum | None = None
     geojson_geometry: GeoJSONGeometry | None = None
+    pin_point: PinPoint | None = Field(
+        default=None,
+        description="Koordinat pin kustom opsional; set null bersama clear_pin_point=true untuk kembali ke titik tengah otomatis.",
+    )
+    clear_pin_point: bool = Field(
+        default=False,
+        description="Jika true, menghapus pin_point kustom dan menghitung ulang dari geometri.",
+    )
     is_active: bool | None = None
 
 
@@ -149,14 +231,17 @@ class SegmentResponse(BaseModel):
     name: str
     corridor: CorridorEnum
     geojson_geometry: dict[str, Any]
+    pin_point: PinPoint | None = None
+    pin_point_source: Literal["custom", "computed"] = "computed"
     is_active: bool
     updated_at: datetime
     has_geometry: bool = True
     last_inspection_date: date | None = None
+    observation: ObservationBriefResponse | None = None
 
 
 class SegmentDetailResponse(SegmentResponse):
-    observation: ObservationBriefResponse | None = None
+    pass
 
 
 class ObservationValidationAlertItem(BaseModel):
@@ -177,19 +262,47 @@ class ObservationValidationSummaryResponse(BaseModel):
     missing_observation_segments: list[ObservationValidationAlertItem]
 
 
-# ---------------------------------------------------------------------------
-# Modul 3: Observations & CSV Staging
-# ---------------------------------------------------------------------------
-
-
 class ObservationFormRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "segment_code": "GG-CSK-001",
+                "total_lights": 12,
+                "broken_lights": 7,
+                "dawn_crime_count": 5,
+                "boarding_house_count": 18,
+                "criteria_values": {"road_width_m": 2.4},
+                "inspection_date": "2026-11-25",
+            }
+        }
+    )
+
     segment_id: int | None = None
     segment_code: str | None = None
     total_lights: int = Field(..., ge=0)
     broken_lights: int = Field(..., ge=0)
     dawn_crime_count: int | None = Field(default=None, ge=0)
     boarding_house_count: int = Field(..., ge=0)
+    criteria_values: dict[str, float | None] = Field(
+        default_factory=dict,
+        description="Nilai kriteria dinamis tambahan (key = kode kriteria, misal road_width_m).",
+    )
     inspection_date: date
+
+    @field_validator("criteria_values")
+    @classmethod
+    def validate_criteria_values(
+        cls, values: dict[str, float | None]
+    ) -> dict[str, float | None]:
+        cleaned: dict[str, float | None] = {}
+        for k, v in values.items():
+            code = str(k).strip().lower()
+            if not code:
+                raise ValueError("Kode kriteria pada criteria_values tidak boleh kosong.")
+            if v is not None and float(v) < 0.0:
+                raise ValueError(f"Nilai kriteria '{code}' tidak boleh negatif.")
+            cleaned[code] = float(v) if v is not None else None
+        return cleaned
 
     @model_validator(mode="after")
     def validate_business_rules(self) -> "ObservationFormRequest":
@@ -220,6 +333,7 @@ class CSVValidatedRow(BaseModel):
     broken_lights: int | None = None
     dawn_crime_count: int | None = None
     boarding_house_count: int | None = None
+    criteria_values: dict[str, float | None] = Field(default_factory=dict)
     inspection_date: str | None = None
     status: Literal["VALID", "WARNING", "ERROR"]
     issues: list[CSVValidationIssue] = Field(default_factory=list)
@@ -245,7 +359,21 @@ class CSVRowCorrection(BaseModel):
     broken_lights: int = Field(..., ge=0)
     dawn_crime_count: int | None = Field(default=None, ge=0)
     boarding_house_count: int = Field(..., ge=0)
+    criteria_values: dict[str, float | None] = Field(default_factory=dict)
     inspection_date: date
+
+    @field_validator("criteria_values")
+    @classmethod
+    def validate_correction_criteria(
+        cls, values: dict[str, float | None]
+    ) -> dict[str, float | None]:
+        cleaned: dict[str, float | None] = {}
+        for k, v in values.items():
+            code = str(k).strip().lower()
+            if v is not None and float(v) < 0.0:
+                raise ValueError(f"Nilai kriteria '{code}' tidak boleh negatif.")
+            cleaned[code] = float(v) if v is not None else None
+        return cleaned
 
     @model_validator(mode="after")
     def check_lights(self) -> "CSVRowCorrection":
@@ -267,22 +395,60 @@ class CSVConfirmResponse(BaseModel):
     committed_segment_codes: list[str]
 
 
-# ---------------------------------------------------------------------------
-# Modul 4: AHP Weighting
-# ---------------------------------------------------------------------------
+class AHPCriterionInput(BaseModel):
+    """Definisi satu kriteria pada perhitungan AHP dinamis."""
+
+    code: str = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        description="Kode unik kriteria (huruf kecil, angka, underscore), misal broken_lights atau road_width_m.",
+    )
+    label: str = Field(..., min_length=1, max_length=150)
+    direction: Literal["max", "min"] = Field(
+        default="max",
+        description="Arah optimasi TOPSIS: 'max' (benefit/semakin besar semakin prioritas) atau 'min' (cost).",
+    )
+
+    @field_validator("code")
+    @classmethod
+    def normalize_criterion_code(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if not _CRITERION_CODE_PATTERN.match(cleaned):
+            raise ValueError(
+                "Kode kriteria harus diawali huruf kecil dan hanya mengandung huruf kecil, angka, atau underscore (_)."
+            )
+        return cleaned
+
+
+class AHPCriterionResponse(BaseModel):
+    id: int | None = None
+    code: str
+    label: str
+    direction: Literal["max", "min"]
+    weight: float
+    display_order: int
+
+
+class ActiveCriteriaResponse(BaseModel):
+    ahp_version_id: int | None = None
+    version_name: str
+    cr: float
+    is_consistent: bool
+    criteria: list[AHPCriterionResponse]
 
 
 class AHPSaatyComparisons(BaseModel):
-    """Perbandingan berpasangan skala Saaty (1-9 atau resiprokal) untuk 3 kriteria."""
+    """Perbandingan berpasangan skala Saaty (1-9 atau resiprokal) untuk 3 kriteria bawaan."""
 
     c1_vs_c2: float = Field(
-        ..., gt=0, description="Proporsi lampu mati (C1) dibanding Curanmor dini hari (C2)"
+        ..., gt=0, description="Kerusakan lampu PJU (C1) dibanding Curanmor dini hari (C2)"
     )
     c1_vs_c3: float = Field(
-        ..., gt=0, description="Proporsi lampu mati (C1) dibanding Indekos dilayani (C3)"
+        ..., gt=0, description="Kerusakan lampu PJU (C1) dibanding Kepadatan indekos (C3)"
     )
     c2_vs_c3: float = Field(
-        ..., gt=0, description="Curanmor dini hari (C2) dibanding Indekos dilayani (C3)"
+        ..., gt=0, description="Curanmor dini hari (C2) dibanding Kepadatan indekos (C3)"
     )
 
     def to_matrix(self) -> list[list[float]]:
@@ -294,13 +460,36 @@ class AHPSaatyComparisons(BaseModel):
 
 
 class AHPCalculateRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "criteria": [
+                    {"code": "broken_lights", "label": "Kerusakan Lampu PJU", "direction": "max"},
+                    {"code": "dawn_crime_count", "label": "Curanmor Dini Hari", "direction": "max"},
+                    {"code": "boarding_house_count", "label": "Kepadatan Indekos", "direction": "max"},
+                    {"code": "road_width_m", "label": "Lebar Gang (m)", "direction": "min"},
+                ],
+                "pairwise_matrix": [
+                    [1.0, 0.5, 2.0, 3.0],
+                    [2.0, 1.0, 3.0, 5.0],
+                    [0.5, 0.3333, 1.0, 2.0],
+                    [0.3333, 0.2, 0.5, 1.0],
+                ],
+            }
+        }
+    )
+
     pairwise_matrix: list[list[float]] | None = Field(
         default=None,
-        description="Matriks perbandingan berpasangan 3x3 untuk [C1: Kerusakan Lampu, C2: Curanmor Dini Hari, C3: Kepadatan Indekos].",
+        description="Matriks perbandingan berpasangan persegi NxN (1 <= N <= 15).",
+    )
+    criteria: list[AHPCriterionInput] | None = Field(
+        default=None,
+        description="Daftar definisi N kriteria sesuai urutan baris/kolom matriks. Opsional untuk 3 kriteria bawaan.",
     )
     saaty_comparisons: AHPSaatyComparisons | None = Field(
         default=None,
-        description="Alternatif input 3 perbandingan skala Saaty dari UI slider/dropdown.",
+        description="Alternatif input 3 perbandingan skala Saaty (khusus 3 kriteria bawaan).",
     )
 
     @field_validator("pairwise_matrix")
@@ -308,23 +497,43 @@ class AHPCalculateRequest(BaseModel):
     def validate_matrix_shape(
         cls, matrix: list[list[float]] | None
     ) -> list[list[float]] | None:
-        if matrix is not None and (len(matrix) != 3 or any(len(row) != 3 for row in matrix)):
-            raise ValueError("pairwise_matrix wajib berukuran 3x3.")
+        if matrix is not None:
+            n = len(matrix)
+            if n < MIN_CRITERIA or n > MAX_CRITERIA:
+                raise ValueError(
+                    f"Ukuran pairwise_matrix harus antara {MIN_CRITERIA}x{MIN_CRITERIA} hingga {MAX_CRITERIA}x{MAX_CRITERIA}."
+                )
+            if any(len(row) != n for row in matrix):
+                raise ValueError("pairwise_matrix wajib berbentuk matriks persegi NxN.")
         return matrix
 
     @model_validator(mode="after")
     def resolve_matrix(self) -> "AHPCalculateRequest":
         if self.pairwise_matrix is None and self.saaty_comparisons is None:
             raise ValueError(
-                "Harap sertakan pairwise_matrix (3x3) atau saaty_comparisons."
+                "Harap sertakan pairwise_matrix (NxN) atau saaty_comparisons."
             )
         if self.pairwise_matrix is None and self.saaty_comparisons is not None:
             self.pairwise_matrix = self.saaty_comparisons.to_matrix()
+        if (
+            self.criteria is not None
+            and self.pairwise_matrix is not None
+            and len(self.criteria) != len(self.pairwise_matrix)
+        ):
+            raise ValueError(
+                f"Jumlah criteria ({len(self.criteria)}) harus sama dengan dimensi pairwise_matrix ({len(self.pairwise_matrix)})."
+            )
+        if self.criteria is not None:
+            codes = [c.code for c in self.criteria]
+            if len(set(codes)) != len(codes):
+                raise ValueError("Daftar criteria tidak boleh memiliki kode duplikat.")
         return self
 
 
 class AHPCalculateResponse(BaseModel):
     pairwise_matrix: list[list[float]]
+    criteria: list[AHPCriterionResponse] = Field(default_factory=list)
+    weights_map: dict[str, float] = Field(default_factory=dict)
     w_light_damage: float
     w_dawn_crime: float
     w_boarding_density: float
@@ -336,6 +545,27 @@ class AHPCalculateResponse(BaseModel):
 
 
 class AHPVersionCreateRequest(AHPCalculateRequest):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "version_name": "Bobot Pakar 4 Kriteria Jatinangor v2.0",
+                "activate_immediately": True,
+                "criteria": [
+                    {"code": "broken_lights", "label": "Kerusakan Lampu PJU", "direction": "max"},
+                    {"code": "dawn_crime_count", "label": "Curanmor Dini Hari", "direction": "max"},
+                    {"code": "boarding_house_count", "label": "Kepadatan Indekos", "direction": "max"},
+                    {"code": "road_width_m", "label": "Lebar Gang (m)", "direction": "min"},
+                ],
+                "pairwise_matrix": [
+                    [1.0, 0.5, 2.0, 3.0],
+                    [2.0, 1.0, 3.0, 5.0],
+                    [0.5, 0.3333, 1.0, 2.0],
+                    [0.3333, 0.2, 0.5, 1.0],
+                ],
+            }
+        }
+    )
+
     version_name: str = Field(..., min_length=2, max_length=150)
     activate_immediately: bool = False
 
@@ -347,6 +577,8 @@ class AHPVersionResponse(BaseModel):
     version_name: str
     created_by: int
     pairwise_matrix: list[list[float]]
+    criteria: list[AHPCriterionResponse] = Field(default_factory=list)
+    weights_map: dict[str, float] = Field(default_factory=dict)
     w_light_damage: float
     w_dawn_crime: float
     w_boarding_density: float
@@ -359,16 +591,21 @@ class AHPVersionResponse(BaseModel):
     created_at: datetime
 
 
-# ---------------------------------------------------------------------------
-# Modul 5: TOPSIS Ranking
-# ---------------------------------------------------------------------------
-
-
 class TOPSISCycleCreateRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "cycle_name": "Siklus Evaluasi November 2026",
+                "criteria_directions": None,
+            }
+        }
+    )
+
     cycle_name: str = Field(..., min_length=2, max_length=200)
-    criteria_directions: tuple[
-        Literal["max", "min"], Literal["max", "min"], Literal["max", "min"]
-    ] = ("max", "max", "max")
+    criteria_directions: list[Literal["max", "min"]] | None = Field(
+        default=None,
+        description="Opsional override arah tiap kriteria; jika kosong mengikuti definisi arah pada versi AHP aktif.",
+    )
 
 
 class CycleRankingItemResponse(BaseModel):
@@ -388,6 +625,8 @@ class CycleRankingItemResponse(BaseModel):
     weighted_c1: float | None
     weighted_c2: float | None
     weighted_c3: float | None
+    normalized_values: dict[str, float] | None = None
+    weighted_values: dict[str, float] | None = None
     d_plus: float | None
     d_minus: float | None
     preference_score: float | None
@@ -408,11 +647,6 @@ class TOPSISCycleDetailResponse(BaseModel):
     ineligible_count: int
     eligible_results: list[CycleRankingItemResponse]
     ineligible_results: list[CycleRankingItemResponse]
-
-
-# ---------------------------------------------------------------------------
-# Modul 6: Priority Map
-# ---------------------------------------------------------------------------
 
 
 class MapSummaryMetrics(BaseModel):
@@ -444,9 +678,12 @@ class MapSegmentDetailResponse(BaseModel):
     corridor: CorridorEnum
     is_active: bool
     geojson_geometry: dict[str, Any]
+    pin_point: PinPoint | None = None
+    pin_point_source: Literal["custom", "computed"] = "computed"
     cycle_id: int | None = None
     cycle_name: str | None = None
     ahp_weights: dict[str, Any] | None = None
+    criteria: list[dict[str, Any]] | None = None
     indicators: dict[str, Any] | None = None
     normalized_values: dict[str, float | None] | None = None
     weighted_values: dict[str, float | None] | None = None
@@ -462,12 +699,9 @@ class MapSegmentDetailResponse(BaseModel):
     data_source: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# Modul 7: Worklists & Override Audit
-# ---------------------------------------------------------------------------
-
-
 class WorklistProposeRequest(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"example": {"capacity_quota": 5}})
+
     capacity_quota: int = Field(..., gt=0, description="Kapasitas jumlah gang K > 0")
 
 
@@ -494,6 +728,16 @@ class WorklistProposeResponse(BaseModel):
 
 
 class WorklistFinalizeRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "capacity_quota": 3,
+                "final_selected_segment_ids": [1, 4, 6],
+                "override_reason": "Prioritas akses utama kos mahasiswa yang sedang padam total.",
+            }
+        }
+    )
+
     capacity_quota: int = Field(..., gt=0)
     final_selected_segment_ids: list[int] = Field(..., min_length=1)
     override_reason: str | None = None
@@ -502,7 +746,9 @@ class WorklistFinalizeRequest(BaseModel):
     @classmethod
     def validate_unique_ids(cls, ids: list[int]) -> list[int]:
         if len(set(ids)) != len(ids):
-            raise ValueError("final_selected_segment_ids tidak boleh mengandung ID duplikat.")
+            raise ValueError(
+                "final_selected_segment_ids tidak boleh mengandung ID duplikat."
+            )
         return ids
 
     @model_validator(mode="after")
@@ -526,11 +772,6 @@ class WorklistDecisionResponse(BaseModel):
     is_overridden: bool
     override_reason: str | None
     finalized_at: datetime
-
-
-# ---------------------------------------------------------------------------
-# Modul 8: History
-# ---------------------------------------------------------------------------
 
 
 class CycleHistorySummaryResponse(BaseModel):

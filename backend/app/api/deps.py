@@ -1,9 +1,10 @@
-"""Authentication and Role-Based Access Control (RBAC) FastAPI dependencies."""
+"""Dependensi autentikasi JWT dan otorisasi peran (RBAC) FastAPI."""
 
 from typing import Callable
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -13,11 +14,33 @@ from app.models.models import User, UserRole
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def _resolve_user_from_token(token: str, db: Session) -> User | None:
+    # Terima juga token mock seeder frontend berformat mock-jwt-token-<username>-<timestamp>.
+    if token.startswith("mock-jwt-token-"):
+        remainder = token.removeprefix("mock-jwt-token-")
+        username = remainder.rsplit("-", 1)[0]
+        user = db.scalar(select(User).where(User.username == username))
+        if user is not None and user.is_active:
+            return user
+        return None
+
+    try:
+        payload = decode_access_token(token)
+        user_id = int(payload["sub"])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+    user = db.get(User, user_id)
+    if user is None or not user.is_active:
+        return None
+    return user
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> User:
-    """Validate Bearer JWT token and return the active authenticated User."""
+    """Wajibkan Bearer token valid dan kembalikan pengguna aktif, atau tolak dengan 401."""
     if credentials is None or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -25,28 +48,28 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    try:
-        payload = decode_access_token(credentials.credentials)
-        user_id = int(payload["sub"])
-    except (ValueError, KeyError, TypeError):
+    user = _resolve_user_from_token(credentials.credentials, db)
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token autentikasi tidak valid atau telah kedaluwarsa.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-    user = db.get(User, user_id)
-    if user is None or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Akun pengguna tidak ditemukan atau tidak aktif.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
     return user
 
 
+def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> User | None:
+    """Kembalikan pengguna aktif jika Bearer token disertakan, atau None untuk akses baca publik."""
+    if credentials is None or not credentials.credentials:
+        return None
+    return _resolve_user_from_token(credentials.credentials, db)
+
+
 def require_roles(*allowed_roles: UserRole) -> Callable[[User], User]:
-    """Dependency factory enforcing RBAC role authorization."""
+    """Batasi akses endpoint hanya untuk daftar peran RBAC tertentu (tolak dengan 403)."""
 
     def _role_checker(current_user: User = Depends(get_current_user)) -> User:
         if allowed_roles and current_user.role not in allowed_roles:

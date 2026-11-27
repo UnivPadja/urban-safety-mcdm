@@ -1,6 +1,7 @@
-"""SQLAlchemy ORM models package."""
+"""Ekspor seluruh model ORM dan enum SQLAlchemy DSS PJU Jatinangor."""
 
 from app.models.models import (
+    AHPVersionCriterion,
     AHPWeightVersion,
     AlleySegment,
     BatchStatus,
@@ -10,6 +11,7 @@ from app.models.models import (
     CycleStatus,
     DataSourceEnum,
     EvaluationCycle,
+    SegmentCriterionValue,
     SegmentObservation,
     User,
     UserRole,
@@ -17,6 +19,7 @@ from app.models.models import (
 )
 
 __all__ = [
+    "AHPVersionCriterion",
     "AHPWeightVersion",
     "AlleySegment",
     "BatchStatus",
@@ -26,6 +29,7 @@ __all__ = [
     "CycleStatus",
     "DataSourceEnum",
     "EvaluationCycle",
+    "SegmentCriterionValue",
     "SegmentObservation",
     "User",
     "UserRole",

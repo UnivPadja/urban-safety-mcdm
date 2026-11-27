@@ -1,4 +1,4 @@
-"""Modul 1: User account management endpoints (ADMIN only)."""
+"""Modul 1: Endpoint manajemen akun pengguna (khusus ADMIN)."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -18,7 +18,7 @@ def list_users(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.ADMIN)),
 ) -> list[UserResponse]:
-    """Return all user accounts (ADMIN only)."""
+    """Tampilkan seluruh akun pengguna terdaftar (khusus ADMIN)."""
     users = db.scalars(select(User).order_by(User.id.asc())).all()
     return [UserResponse.model_validate(u) for u in users]
 
@@ -29,7 +29,7 @@ def create_user(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.ADMIN)),
 ) -> UserResponse:
-    """Create a new user account with assigned role (ADMIN only)."""
+    """Buat akun pengguna baru dengan peran RBAC tertentu (khusus ADMIN)."""
     username = payload.username.strip()
     email = payload.email.strip().lower()
 
@@ -67,7 +67,7 @@ def update_user(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.ADMIN)),
 ) -> UserResponse:
-    """Update user role, full name, or active status (ADMIN only)."""
+    """Perbarui nama, peran RBAC, status aktif, atau password pengguna (khusus ADMIN)."""
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(

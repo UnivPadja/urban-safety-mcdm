@@ -1,1 +1,1 @@
-"""Core configuration, database, and security modules."""
+"""Modul konfigurasi, koneksi database, dan keamanan JWT/bcrypt."""

@@ -1,1 +1,1 @@
-"""Pydantic v2 request and response schemas package."""
+"""Skema validasi Pydantic v2 untuk request dan response API."""

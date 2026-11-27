@@ -388,7 +388,7 @@ export async function updateSegment(
 }
 
 // -------------------------------------------------------------
-// 2. PENDATAAN & CSV IMPORT
+// 2. PENDATAAN OBSERVASI LAPANGAN
 // -------------------------------------------------------------
 export interface ObservationFormRequest {
   segment_id?: number | null;
@@ -405,60 +405,6 @@ export interface ObservationFormResponse {
   warnings?: string[];
 }
 
-export interface CSVValidationIssue {
-  code: string;
-  severity: "WARNING" | "ERROR";
-  message: string;
-}
-
-export interface CSVValidatedRow {
-  row_number: number;
-  segment_code: string;
-  total_lights: number | null;
-  broken_lights: number | null;
-  dawn_crime_count: number | null;
-  boarding_house_count: number | null;
-  inspection_date: string | null;
-  status: "VALID" | "WARNING" | "ERROR";
-  issues?: CSVValidationIssue[];
-  messages?: string[];
-}
-
-export interface CSVUploadPreviewResponse {
-  batch_id: string;
-  filename: string;
-  status: "PENDING_CONFIRMATION" | "CONFIRMED" | "CANCELLED";
-  total_rows: number;
-  valid_rows: number;
-  warning_rows: number;
-  error_rows: number;
-  rows: CSVValidatedRow[];
-  created_at: string;
-}
-
-export interface CSVRowCorrection {
-  row_number: number;
-  segment_code: string;
-  total_lights: number;
-  broken_lights: number;
-  dawn_crime_count?: number | null;
-  boarding_house_count: number;
-  inspection_date: string;
-}
-
-export interface CSVConfirmRequest {
-  include_warnings?: boolean;
-  corrections?: CSVRowCorrection[];
-}
-
-export interface CSVConfirmResponse {
-  batch_id: string;
-  status: "PENDING_CONFIRMATION" | "CONFIRMED" | "CANCELLED";
-  committed_count: number;
-  skipped_error_count: number;
-  committed_segment_codes: string[];
-}
-
 export async function submitObservationForm(
   payload: ObservationFormRequest
 ): Promise<ObservationFormResponse> {
@@ -470,43 +416,6 @@ export async function submitObservationForm(
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Gagal menyimpan formulir observasi.");
-  }
-  return await res.json();
-}
-
-export async function uploadCSVObservation(
-  file: File
-): Promise<CSVUploadPreviewResponse> {
-  const formData = new FormData();
-  formData.append("file", file);
-
-  const res = await fetch(`${BACKEND_API_URL}/observations/upload-csv`, {
-    method: "POST",
-    headers: getAuthHeaders(),
-    body: formData,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Gagal mengunggah berkas CSV.");
-  }
-  return await res.json();
-}
-
-export async function confirmCSVBatch(
-  batchId: string,
-  payload: CSVConfirmRequest = { include_warnings: true }
-): Promise<CSVConfirmResponse> {
-  const res = await fetch(
-    `${BACKEND_API_URL}/observations/batches/${batchId}/confirm`,
-    {
-      method: "POST",
-      headers: getAuthHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(payload),
-    }
-  );
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Gagal mengonfirmasi batch CSV.");
   }
   return await res.json();
 }

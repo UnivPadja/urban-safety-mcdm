@@ -1,1 +1,1 @@
-"""Decision engines and validation services package."""
+"""Layanan perhitungan AHP, TOPSIS, validasi CSV, dan geometri pin point."""

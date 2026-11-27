@@ -1,4 +1,4 @@
-"""Unit and integration tests for AHP, TOPSIS, CSV validator, RBAC, and Worklist audit."""
+"""Pengujian unit dan integrasi untuk AHP dinamis, TOPSIS, validator CSV, pin point map, dan audit worklist."""
 
 from datetime import date, timedelta
 from pathlib import Path
@@ -22,13 +22,12 @@ from app.services.topsis_engine import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Fixtures for isolated in-memory SQLite API tests
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture()
-def client():
+def client(monkeypatch: pytest.MonkeyPatch):
+    # Hindari lifespan memanggil Supabase asli saat pengujian unit/integrasi berjalan.
+    monkeypatch.setattr("app.main.init_db", lambda: None)
+    monkeypatch.setattr("app.main.seed_database", lambda: None)
+
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -63,13 +62,8 @@ def _login(client: TestClient, username: str, password: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-# ---------------------------------------------------------------------------
-# 1. AHP Engine Tests
-# ---------------------------------------------------------------------------
-
-
 def test_ahp_consistent_matrix_accuracy():
-    # Perfectly consistent matrix: weights should be [2/7, 4/7, 1/7]
+    # Matriks konsisten sempurna menghasilkan bobot eksak [2/7, 4/7, 1/7] dengan CR = 0.
     matrix = [
         [1.0, 0.5, 2.0],
         [2.0, 1.0, 4.0],
@@ -90,7 +84,7 @@ def test_ahp_consistent_matrix_accuracy():
 
 
 def test_ahp_inconsistent_matrix_flagged():
-    # Strongly inconsistent matrix: C1 > C2 (9), C2 > C3 (9), C3 > C1 (9)
+    # Siklus kontradiktif (C1 > C2, C2 > C3, C3 > C1) wajib memicu CR > 0.10.
     matrix = [
         [1.0, 9.0, 1.0 / 9.0],
         [1.0 / 9.0, 1.0, 9.0],
@@ -132,11 +126,6 @@ def test_ahp_reject_activation_when_cr_above_threshold(client: TestClient):
     assert activate_resp.status_code == 400
 
 
-# ---------------------------------------------------------------------------
-# 2. TOPSIS Engine & Tie-Breaker Tests
-# ---------------------------------------------------------------------------
-
-
 def test_topsis_ranking_accuracy_and_edge_cases():
     items = [
         TOPSISInputItem(1, "GG-A", broken_lights=8, dawn_crime_count=6, boarding_house_count=20),
@@ -163,7 +152,7 @@ def test_topsis_single_segment_and_zero_column():
     assert ranked_single[0].rank == 1
     assert ranked_single[0].norm_c2 == 0.0
 
-    # Multiple segments with zero column on C2 (dawn_crime_count == 0 for all)
+    # Kolom bernilai 0 di semua segmen tidak boleh memicu pembagian nol (NaN).
     zero_c2 = [
         TOPSISInputItem(1, "GG-01", broken_lights=6, dawn_crime_count=0, boarding_house_count=10),
         TOPSISInputItem(2, "GG-02", broken_lights=3, dawn_crime_count=0, boarding_house_count=5),
@@ -174,7 +163,7 @@ def test_topsis_single_segment_and_zero_column():
 
 
 def test_topsis_tie_breaker_deterministic_order():
-    # Identical values -> identical preference score -> tie-broken flag & segment_code ASC
+    # Nilai identik wajib ditandai is_tie_broken dan diurutkan menurut segment_code menaik.
     identical = [
         TOPSISInputItem(2, "GG-Z", broken_lights=5, dawn_crime_count=3, boarding_house_count=10),
         TOPSISInputItem(1, "GG-A", broken_lights=5, dawn_crime_count=3, boarding_house_count=10),
@@ -188,10 +177,7 @@ def test_topsis_tie_breaker_deterministic_order():
     assert ranked[1].is_tie_broken is True
     assert ranked[2].is_tie_broken is False
 
-    # Same preference score via symmetric weights:
-    # Weights equal (1/3, 1/3, 1/3):
-    # Seg 1: (4, 6, 10) vs Seg 2: (6, 4, 10) -> same norm sums and distances -> same C_i!
-    # Tie-breaker must prioritize higher dawn_crime_count (Seg 1: 6 > Seg 2: 4).
+    # Bobot simetris (1/3, 1/3, 1/3) membuat skor sama; tie-breaker harus memilih dawn_crime_count lebih tinggi.
     symmetric = [
         TOPSISInputItem(1, "GG-CRIME-LOW", broken_lights=6, dawn_crime_count=4, boarding_house_count=10),
         TOPSISInputItem(2, "GG-CRIME-HIGH", broken_lights=4, dawn_crime_count=6, boarding_house_count=10),
@@ -245,11 +231,6 @@ def test_eligibility_rules():
     assert eligible_exp is False
 
 
-# ---------------------------------------------------------------------------
-# 3. CSV Validator Tests
-# ---------------------------------------------------------------------------
-
-
 def test_csv_validator_sample_file():
     sample_path = Path(__file__).resolve().parents[1] / "sample_data" / "sample_jatinangor_import.csv"
     csv_bytes = sample_path.read_bytes()
@@ -269,9 +250,9 @@ def test_csv_validator_sample_file():
     )
 
     assert summary.total_rows == 8
-    assert summary.valid_rows == 2  # GG-CRG-001 and GG-GHN-001
-    assert summary.warning_rows == 2  # expired date + incomplete crime
-    assert summary.error_rows == 4  # 2 duplicate GG-CSK-001 + broken>total + unknown
+    assert summary.valid_rows == 2
+    assert summary.warning_rows == 2
+    assert summary.error_rows == 4
 
     issue_codes = {
         issue["code"]
@@ -287,18 +268,12 @@ def test_csv_validator_sample_file():
     }.issubset(issue_codes)
 
 
-# ---------------------------------------------------------------------------
-# 4. End-to-End API, RBAC, Map, Worklist Override & CSV Export Tests
-# ---------------------------------------------------------------------------
-
-
 def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     client: TestClient,
 ):
     pju_headers = _login(client, "pju_lead", "pju123")
     operator_headers = _login(client, "operator", "operator123")
 
-    # RBAC check: OPERATOR cannot execute TOPSIS cycle
     forbidden_resp = client.post(
         "/api/v1/topsis/cycles",
         headers=operator_headers,
@@ -306,7 +281,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     )
     assert forbidden_resp.status_code == 403
 
-    # Run TOPSIS cycle as PENANGGUNG_JAWAB_PJU
     cycle_resp = client.post(
         "/api/v1/topsis/cycles",
         headers=pju_headers,
@@ -316,9 +290,8 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     cycle_data = cycle_resp.json()
     cycle_id = cycle_data["cycle_id"]
     assert cycle_data["eligible_count"] == 11
-    assert cycle_data["ineligible_count"] == 1  # GG-HGM-002 has 0 broken lights
+    assert cycle_data["ineligible_count"] == 1
 
-    # Propose Top-3 worklist
     propose_resp = client.post(
         f"/api/v1/worklists/cycles/{cycle_id}/propose",
         headers=pju_headers,
@@ -330,7 +303,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     reserve_id = propose_data["reserve_candidates"][0]["segment_id"]
     override_ids = [proposed_ids[0], proposed_ids[1], reserve_id]
 
-    # Attempt finalize with override but NO reason -> must be 422
     bad_finalize = client.post(
         f"/api/v1/worklists/cycles/{cycle_id}/finalize",
         headers=pju_headers,
@@ -343,7 +315,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     assert bad_finalize.status_code == 422
     assert "Alasan perubahan wajib diisi" in bad_finalize.json()["detail"]
 
-    # Attempt finalize with short reason (< 10 chars) -> must be 422
     short_finalize = client.post(
         f"/api/v1/worklists/cycles/{cycle_id}/finalize",
         headers=pju_headers,
@@ -355,7 +326,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     )
     assert short_finalize.status_code == 422
 
-    # Valid override reason -> succeeds (201)
     good_finalize = client.post(
         f"/api/v1/worklists/cycles/{cycle_id}/finalize",
         headers=pju_headers,
@@ -369,7 +339,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     decision = good_finalize.json()
     assert decision["is_overridden"] is True
 
-    # Map priority layer returns GeoJSON FeatureCollection
     map_resp = client.get(
         f"/api/v1/map/priority-layer?cycle_id={cycle_id}",
         headers=pju_headers,
@@ -379,7 +348,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     assert geojson["type"] == "FeatureCollection"
     assert len(geojson["features"]) == 12
 
-    # Export CSV works and reflects USULAN_SISTEM & PILIHAN_OVERRIDE
     csv_resp = client.get(
         f"/api/v1/history/cycles/{cycle_id}/export-csv",
         headers=pju_headers,
@@ -391,7 +359,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     assert "USULAN_SISTEM" in csv_text
     assert "PILIHAN_OVERRIDE" in csv_text
 
-    # Map segment detail & history list
     detail_resp = client.get(
         f"/api/v1/map/segments/{proposed_ids[0]}/detail?cycle_id={cycle_id}",
         headers=pju_headers,
@@ -408,13 +375,11 @@ def test_csv_upload_confirm_and_admin_rbac(client: TestClient):
     admin_headers = _login(client, "admin", "admin123")
     operator_headers = _login(client, "operator", "operator123")
 
-    # Non-admin cannot list users
     assert client.get("/api/v1/users", headers=operator_headers).status_code == 403
     users_resp = client.get("/api/v1/users", headers=admin_headers)
     assert users_resp.status_code == 200
     assert len(users_resp.json()) == 4
 
-    # Upload sample CSV as operator
     sample_path = (
         Path(__file__).resolve().parents[1]
         / "sample_data"
@@ -433,7 +398,6 @@ def test_csv_upload_confirm_and_admin_rbac(client: TestClient):
     assert preview["warning_rows"] == 2
     assert preview["error_rows"] == 4
 
-    # Confirm valid & warning rows (skipping 4 error rows)
     confirm_resp = client.post(
         f"/api/v1/observations/batches/{preview['batch_id']}/confirm",
         headers=operator_headers,
@@ -446,7 +410,6 @@ def test_csv_upload_confirm_and_admin_rbac(client: TestClient):
 
 
 def test_figma_aligned_endpoints_and_workflows(client: TestClient):
-    # 1. Email login (Screen 00) & Password reset (Screen 08b)
     email_login = client.post(
         "/api/v1/auth/login",
         json={"email": "admin@jatinangor-dss.id", "password": "admin123"},
@@ -464,7 +427,6 @@ def test_figma_aligned_endpoints_and_workflows(client: TestClient):
     assert reset_resp.status_code == 200, reset_resp.text
     op_headers = _login(client, "operator@jatinangor-dss.id", "operator_new123")
 
-    # 2. Segments list includes has_geometry and last_inspection_date (Screen 02)
     seg_resp = client.get("/api/v1/segments", headers=op_headers)
     assert seg_resp.status_code == 200
     segments = seg_resp.json()
@@ -472,7 +434,6 @@ def test_figma_aligned_endpoints_and_workflows(client: TestClient):
     assert all(s["has_geometry"] is True for s in segments)
     assert all(s["last_inspection_date"] is not None for s in segments)
 
-    # 3. Observations validation-summary, csv-template, GET batch & DELETE batch (Screens 03/03b/03c)
     val_resp = client.get("/api/v1/observations/validation-summary", headers=op_headers)
     assert val_resp.status_code == 200
     val_data = val_resp.json()
@@ -519,7 +480,6 @@ def test_figma_aligned_endpoints_and_workflows(client: TestClient):
         == 400
     )
 
-    # 4. AHP calculate-preview via saaty_comparisons (Screen 04)
     penilai_headers = _login(client, "penilai", "penilai123")
     ahp_preview = client.post(
         "/api/v1/ahp/calculate-preview",
@@ -529,7 +489,6 @@ def test_figma_aligned_endpoints_and_workflows(client: TestClient):
     assert ahp_preview.status_code == 200, ahp_preview.text
     assert ahp_preview.json()["is_consistent"] is True
 
-    # 5. TOPSIS latest, Map summary, Worklist detail, and History detail (Screens 01, 05, 07b, 07c)
     pju_headers = _login(client, "pju_lead", "pju123")
     c_resp = client.post(
         "/api/v1/topsis/cycles",
@@ -585,5 +544,251 @@ def test_figma_aligned_endpoints_and_workflows(client: TestClient):
     assert hist_json["summary"]["cycle_id"] == cycle_id
     assert hist_json["worklist"] is not None
     assert len(hist_json["eligible_results"]) == 11
+
+
+def test_dynamic_ahp_and_topsis_engine_beyond_three_criteria():
+    # Kriteria n <= 2 selalu konsisten secara matematis (CI = 0, CR = 0).
+    res_1 = calculate_ahp([[1.0]], criteria=[{"code": "broken_lights", "label": "Lampu Mati", "direction": "max"}])
+    assert res_1.cr == 0.0
+    assert res_1.is_consistent is True
+    assert pytest.approx(res_1.weights_map["broken_lights"], rel=1e-6) == 1.0
+
+    res_2 = calculate_ahp(
+        [[1.0, 2.0], [0.5, 1.0]],
+        criteria=[
+            {"code": "broken_lights", "label": "Lampu Mati", "direction": "max"},
+            {"code": "road_width_m", "label": "Lebar Gang", "direction": "min"},
+        ],
+    )
+    assert res_2.cr == 0.0
+    assert res_2.is_consistent is True
+    assert pytest.approx(res_2.weights_map["broken_lights"], rel=1e-6) == 2.0 / 3.0
+    assert pytest.approx(res_2.weights_map["road_width_m"], rel=1e-6) == 1.0 / 3.0
+
+    criteria_4 = [
+        {"code": "broken_lights", "label": "Kerusakan Lampu PJU", "direction": "max"},
+        {"code": "dawn_crime_count", "label": "Curanmor Dini Hari", "direction": "max"},
+        {"code": "boarding_house_count", "label": "Kepadatan Indekos", "direction": "max"},
+        {"code": "road_width_m", "label": "Lebar Gang (m)", "direction": "min"},
+    ]
+    matrix_4 = [
+        [1.0, 0.5, 2.0, 3.0],
+        [2.0, 1.0, 3.0, 5.0],
+        [0.5, 1.0 / 3.0, 1.0, 2.0],
+        [1.0 / 3.0, 0.2, 0.5, 1.0],
+    ]
+    res_4 = calculate_ahp(matrix_4, criteria=criteria_4)
+    assert res_4.is_consistent is True
+    assert res_4.ri == 0.90
+    assert len(res_4.criteria) == 4
+    assert pytest.approx(sum(c.weight for c in res_4.criteria), rel=1e-6) == 1.0
+
+    # Arah "min" pada road_width_m memprioritaskan gang yang lebih sempit.
+    items = [
+        TOPSISInputItem(
+            1,
+            "GG-NARROW",
+            broken_lights=6,
+            dawn_crime_count=4,
+            boarding_house_count=15,
+            criteria_values={
+                "broken_lights": 6.0,
+                "dawn_crime_count": 4.0,
+                "boarding_house_count": 15.0,
+                "road_width_m": 1.5,
+            },
+        ),
+        TOPSISInputItem(
+            2,
+            "GG-WIDE",
+            broken_lights=6,
+            dawn_crime_count=4,
+            boarding_house_count=15,
+            criteria_values={
+                "broken_lights": 6.0,
+                "dawn_crime_count": 4.0,
+                "boarding_house_count": 15.0,
+                "road_width_m": 4.5,
+            },
+        ),
+    ]
+    ranked = calculate_topsis(
+        items=items,
+        weights=[c.weight for c in res_4.criteria],
+        criteria_directions=[c.direction for c in res_4.criteria],
+        criteria_codes=[c.code for c in res_4.criteria],
+    )
+    assert ranked[0].segment_code == "GG-NARROW"
+    assert ranked[0].preference_score > ranked[1].preference_score
+    assert "road_width_m" in ranked[0].normalized_values
+    assert "road_width_m" in ranked[0].weighted_values
+
+
+def test_dynamic_criteria_end_to_end_workflow_and_live_map(client: TestClient):
+    init_crit = client.get("/api/v1/ahp/criteria")
+    assert init_crit.status_code == 200, init_crit.text
+    assert len(init_crit.json()["criteria"]) == 3
+
+    penilai_headers = _login(client, "penilai", "penilai123")
+    op_headers = _login(client, "operator", "operator123")
+    pju_headers = _login(client, "pju_lead", "pju123")
+
+    criteria_4 = [
+        {"code": "broken_lights", "label": "Kerusakan Lampu PJU", "direction": "max"},
+        {"code": "dawn_crime_count", "label": "Curanmor Dini Hari", "direction": "max"},
+        {"code": "boarding_house_count", "label": "Kepadatan Indekos", "direction": "max"},
+        {"code": "road_width_m", "label": "Lebar Gang (m)", "direction": "min"},
+    ]
+    matrix_4 = [
+        [1.0, 0.5, 2.0, 3.0],
+        [2.0, 1.0, 3.0, 5.0],
+        [0.5, 1.0 / 3.0, 1.0, 2.0],
+        [1.0 / 3.0, 0.2, 0.5, 1.0],
+    ]
+
+    create_ver = client.post(
+        "/api/v1/ahp/versions",
+        headers=penilai_headers,
+        json={
+            "version_name": "Bobot Dinamis 4 Kriteria v2",
+            "activate_immediately": True,
+            "criteria": criteria_4,
+            "pairwise_matrix": matrix_4,
+        },
+    )
+    assert create_ver.status_code == 201, create_ver.text
+    ver_json = create_ver.json()
+    assert ver_json["is_active"] is True
+    assert len(ver_json["criteria"]) == 4
+    assert "road_width_m" in ver_json["weights_map"]
+
+    active_crit = client.get("/api/v1/ahp/criteria").json()
+    assert [c["code"] for c in active_crit["criteria"]] == [
+        "broken_lights",
+        "dawn_crime_count",
+        "boarding_house_count",
+        "road_width_m",
+    ]
+
+    tpl = client.get("/api/v1/observations/csv-template")
+    assert tpl.status_code == 200
+    assert "road_width_m" in tpl.text.splitlines()[0]
+
+    form_resp = client.post(
+        "/api/v1/observations/form",
+        headers=op_headers,
+        json={
+            "segment_code": "GG-CSK-001",
+            "total_lights": 12,
+            "broken_lights": 7,
+            "dawn_crime_count": 5,
+            "boarding_house_count": 18,
+            "criteria_values": {"road_width_m": 1.8},
+            "inspection_date": date.today().isoformat(),
+        },
+    )
+    assert form_resp.status_code == 200, form_resp.text
+    assert form_resp.json()["observation"]["criteria_values"]["road_width_m"] == 1.8
+
+    csv_body = (
+        "segment_code,total_lights,broken_lights,dawn_crime_count,boarding_house_count,inspection_date,road_width_m\n"
+        f"GG-GHN-001,11,6,7,25,{date.today().isoformat()},2.0\n"
+        f"GG-CRG-001,14,8,6,16,{date.today().isoformat()},3.5\n"
+    ).encode("utf-8")
+    up_resp = client.post(
+        "/api/v1/observations/upload-csv",
+        headers=op_headers,
+        files={"file": ("dynamic_obs.csv", csv_body, "text/csv")},
+    )
+    assert up_resp.status_code == 201, up_resp.text
+    batch_id = up_resp.json()["batch_id"]
+    assert up_resp.json()["valid_rows"] == 2
+
+    conf_resp = client.post(
+        f"/api/v1/observations/batches/{batch_id}/confirm",
+        headers=op_headers,
+        json={"include_warnings": True, "corrections": []},
+    )
+    assert conf_resp.status_code == 200, conf_resp.text
+    assert conf_resp.json()["committed_count"] == 2
+
+    # Hanya 3 segmen yang sudah memiliki nilai road_width_m yang lolos kelayakan TOPSIS.
+    cyc_resp = client.post(
+        "/api/v1/topsis/cycles",
+        headers=pju_headers,
+        json={"cycle_name": "Siklus 4 Kriteria Dinamis"},
+    )
+    assert cyc_resp.status_code == 201, cyc_resp.text
+    cyc = cyc_resp.json()
+    assert cyc["eligible_count"] == 3
+    assert cyc["ineligible_count"] == 9
+    assert "road_width_m" in cyc["eligible_results"][0]["normalized_values"]
+
+    live_map = client.get("/api/v1/map/priority-layer")
+    assert live_map.status_code == 200, live_map.text
+    assert live_map.json()["summary"]["eligible_count"] == 3
+
+
+def test_pin_point_map_support_and_geojson_point(client: TestClient):
+    op_headers = _login(client, "operator", "operator123")
+
+    segs = client.get("/api/v1/segments").json()
+    assert len(segs) == 12
+    assert all(s["pin_point"] is not None for s in segs)
+    assert all(s["pin_point_source"] == "computed" for s in segs)
+
+    point_resp = client.post(
+        "/api/v1/segments",
+        headers=op_headers,
+        json={
+            "segment_code": "GG-PNT-001",
+            "name": "Titik PJU Simpang Ciseke",
+            "corridor": "Ciseke",
+            "geojson_geometry": {
+                "type": "Point",
+                "coordinates": [107.7755, -6.9338],
+            },
+            "is_active": True,
+        },
+    )
+    assert point_resp.status_code == 201, point_resp.text
+    point_seg = point_resp.json()
+    assert point_seg["geojson_geometry"]["type"] == "Point"
+    assert point_seg["pin_point"] == {"lat": -6.9338, "lon": 107.7755}
+    assert point_seg["pin_point_source"] == "computed"
+
+    first_id = segs[0]["id"]
+    orig_pin = segs[0]["pin_point"]
+    upd = client.put(
+        f"/api/v1/segments/{first_id}",
+        headers=op_headers,
+        json={"pin_point": {"lat": -6.933333, "lon": 107.775555}},
+    )
+    assert upd.status_code == 200, upd.text
+    assert upd.json()["pin_point"] == {"lat": -6.933333, "lon": 107.775555}
+    assert upd.json()["pin_point_source"] == "custom"
+
+    pin_layer = client.get("/api/v1/map/priority-layer?geometry_mode=pin")
+    assert pin_layer.status_code == 200, pin_layer.text
+    pin_features = pin_layer.json()["features"]
+    assert all(f["geometry"]["type"] == "Point" for f in pin_features)
+    target_feat = next(f for f in pin_features if f["properties"]["segment_id"] == first_id)
+    assert target_feat["geometry"]["coordinates"] == [107.775555, -6.933333]
+    assert target_feat["properties"]["pin_point_source"] == "custom"
+
+    detail = client.get(f"/api/v1/map/segments/{first_id}/detail")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["pin_point"] == {"lat": -6.933333, "lon": 107.775555}
+    assert detail.json()["pin_point_source"] == "custom"
+
+    cleared = client.put(
+        f"/api/v1/segments/{first_id}",
+        headers=op_headers,
+        json={"clear_pin_point": True},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["pin_point"] == orig_pin
+    assert cleared.json()["pin_point_source"] == "computed"
+
 
 

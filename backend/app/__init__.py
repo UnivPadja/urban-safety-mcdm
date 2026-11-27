@@ -1,1 +1,1 @@
-"""Backend application package for DSS PJU Jatinangor."""
+"""Paket utama backend DSS PJU Jatinangor."""

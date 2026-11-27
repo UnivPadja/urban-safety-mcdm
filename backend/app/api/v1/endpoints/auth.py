@@ -1,4 +1,4 @@
-"""Modul 1: Authentication endpoints (login & current user profile)."""
+"""Modul 1: Endpoint autentikasi (login dan profil pengguna aktif)."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import or_, select
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
-    """Authenticate user by username or email and password and issue JWT access token."""
+    """Autentikasi pengguna memakai username atau email dan terbitkan token JWT."""
     if payload.email is not None:
         identifier = str(payload.email).strip().lower()
         stmt = select(User).where(User.email == identifier)
@@ -46,5 +46,5 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse
 
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)) -> UserResponse:
-    """Return profile of currently authenticated user."""
+    """Ambil profil akun pengguna yang sedang login."""
     return UserResponse.model_validate(current_user)

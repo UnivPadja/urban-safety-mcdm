@@ -1,1 +1,1 @@
-"""API v1 endpoints package."""
+"""Kumpulan router endpoint API v1 per modul fungsional."""

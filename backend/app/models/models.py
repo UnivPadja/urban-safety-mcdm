@@ -1,4 +1,4 @@
-"""SQLAlchemy 2.0 database models for all 8 core entities."""
+"""Model ORM SQLAlchemy 2.0 untuk 10 tabel inti DSS PJU Jatinangor."""
 
 import enum
 import uuid
@@ -17,18 +17,18 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
-# Portable JSON column: uses native JSONB on PostgreSQL and JSON on SQLite
+# Pakai JSONB di PostgreSQL Supabase, dan JSON biasa pada fixture SQLite saat testing.
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 
 def utcnow() -> datetime:
-    """Return timezone-aware UTC timestamp."""
     return datetime.now(timezone.utc)
 
 
@@ -88,7 +88,7 @@ class User(Base):
 
 
 class AlleySegment(Base):
-    """2. Data master segmen gang beserta koridor dan geometri GeoJSON."""
+    """2. Data master segmen gang beserta koridor, geometri GeoJSON, dan pin point."""
 
     __tablename__ = "alley_segments"
 
@@ -103,6 +103,7 @@ class AlleySegment(Base):
         index=True,
     )
     geojson_geometry: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False)
+    pin_point: Mapped[dict[str, float] | None] = mapped_column(JSONType, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
@@ -158,10 +159,40 @@ class SegmentObservation(Base):
         "AlleySegment", back_populates="observation"
     )
     updater: Mapped["User"] = relationship("User")
+    criterion_values: Mapped[list["SegmentCriterionValue"]] = relationship(
+        "SegmentCriterionValue",
+        back_populates="observation",
+        cascade="all, delete-orphan",
+    )
+
+
+class SegmentCriterionValue(Base):
+    """4. Nilai indikator kriteria dinamis tambahan per observasi segmen."""
+
+    __tablename__ = "segment_criterion_values"
+    __table_args__ = (
+        UniqueConstraint(
+            "observation_id", "criterion_code", name="uq_obs_criterion_code"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    observation_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("segment_observations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    criterion_code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    observation: Mapped["SegmentObservation"] = relationship(
+        "SegmentObservation", back_populates="criterion_values"
+    )
 
 
 class CSVImportBatch(Base):
-    """4. Staging & pratinjau validasi impor CSV."""
+    """5. Staging & pratinjau validasi impor CSV."""
 
     __tablename__ = "csv_import_batches"
 
@@ -186,7 +217,7 @@ class CSVImportBatch(Base):
 
 
 class AHPWeightVersion(Base):
-    """5. Riwayat dan versi bobot kriteria AHP."""
+    """6. Riwayat dan versi bobot kriteria AHP (dinamis 1-15 kriteria)."""
 
     __tablename__ = "ahp_weight_versions"
 
@@ -210,10 +241,44 @@ class AHPWeightVersion(Base):
     )
 
     creator: Mapped["User"] = relationship("User")
+    criteria: Mapped[list["AHPVersionCriterion"]] = relationship(
+        "AHPVersionCriterion",
+        back_populates="ahp_version",
+        order_by="AHPVersionCriterion.display_order",
+        cascade="all, delete-orphan",
+    )
+
+
+class AHPVersionCriterion(Base):
+    """7. Definisi dan bobot setiap kriteria dalam suatu versi AHP."""
+
+    __tablename__ = "ahp_version_criteria"
+    __table_args__ = (
+        UniqueConstraint(
+            "ahp_version_id", "code", name="uq_ahp_version_criterion_code"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ahp_version_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("ahp_weight_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    code: Mapped[str] = mapped_column(String(50), nullable=False)
+    label: Mapped[str] = mapped_column(String(150), nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), default="max", nullable=False)
+    weight: Mapped[float] = mapped_column(Float, nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    ahp_version: Mapped["AHPWeightVersion"] = relationship(
+        "AHPWeightVersion", back_populates="criteria"
+    )
 
 
 class EvaluationCycle(Base):
-    """6. Siklus perhitungan TOPSIS dan snapshot bobot AHP."""
+    """8. Siklus perhitungan TOPSIS dan snapshot bobot AHP."""
 
     __tablename__ = "evaluation_cycles"
 
@@ -251,7 +316,7 @@ class EvaluationCycle(Base):
 
 
 class CycleRankingResult(Base):
-    """7. Hasil perankingan per segmen pada suatu siklus TOPSIS."""
+    """9. Hasil perankingan per segmen pada suatu siklus TOPSIS."""
 
     __tablename__ = "cycle_ranking_results"
 
@@ -277,6 +342,12 @@ class CycleRankingResult(Base):
     weighted_c1: Mapped[float | None] = mapped_column(Float, nullable=True)
     weighted_c2: Mapped[float | None] = mapped_column(Float, nullable=True)
     weighted_c3: Mapped[float | None] = mapped_column(Float, nullable=True)
+    normalized_values: Mapped[dict[str, float] | None] = mapped_column(
+        JSONType, nullable=True
+    )
+    weighted_values: Mapped[dict[str, float] | None] = mapped_column(
+        JSONType, nullable=True
+    )
     d_plus: Mapped[float | None] = mapped_column(Float, nullable=True)
     d_minus: Mapped[float | None] = mapped_column(Float, nullable=True)
     preference_score: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -290,7 +361,7 @@ class CycleRankingResult(Base):
 
 
 class WorklistDecision(Base):
-    """8. Daftar kerja perbaikan final dan audit override."""
+    """10. Daftar kerja perbaikan final dan audit override."""
 
     __tablename__ = "worklist_decisions"
     __table_args__ = (

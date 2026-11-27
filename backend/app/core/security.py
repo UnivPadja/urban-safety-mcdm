@@ -1,4 +1,4 @@
-"""Password hashing and JWT authentication helpers."""
+"""Utilitas hashing password bcrypt dan penerbitan/verifikasi token JWT."""
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -11,14 +11,12 @@ from app.core.config import settings
 
 
 def hash_password(plain_password: str) -> str:
-    """Hash a plaintext password using bcrypt."""
     salt = bcrypt.gensalt()
     hashed = bcrypt.hashpw(plain_password.encode("utf-8"), salt)
     return hashed.decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a plaintext password against a stored bcrypt hash."""
     try:
         return bcrypt.checkpw(
             plain_password.encode("utf-8"),
@@ -33,7 +31,6 @@ def create_access_token(
     role: str,
     expires_delta: timedelta | None = None,
 ) -> str:
-    """Create a signed JWT access token."""
     now = datetime.now(timezone.utc)
     expire = now + (
         expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -48,7 +45,6 @@ def create_access_token(
 
 
 def decode_access_token(token: str) -> dict[str, Any]:
-    """Decode and validate a JWT access token."""
     try:
         payload = jwt.decode(
             token,

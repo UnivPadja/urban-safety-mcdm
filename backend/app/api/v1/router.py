@@ -1,4 +1,4 @@
-"""API v1 main router aggregating all 8 functional module endpoints."""
+"""Router utama API v1 yang menggabungkan 9 modul endpoint DSS."""
 
 from fastapi import APIRouter
 

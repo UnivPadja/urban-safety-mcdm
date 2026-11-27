@@ -1,4 +1,4 @@
-"""Application configuration loaded from environment variables (Supabase PostgreSQL)."""
+"""Konfigurasi aplikasi berbasis variabel lingkungan untuk Supabase PostgreSQL."""
 
 from functools import lru_cache
 from pathlib import Path
@@ -11,8 +11,6 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
-    """Application settings using Pydantic v2 BaseSettings."""
-
     model_config = SettingsConfigDict(
         env_file=str(BACKEND_DIR / ".env"),
         env_file_encoding="utf-8",
@@ -21,7 +19,7 @@ class Settings(BaseSettings):
     )
 
     APP_NAME: str = "DSS Prioritas Perbaikan PJU & Mitigasi Kriminalitas Dini Hari Jatinangor"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "1.1.0"
     API_V1_PREFIX: str = "/api/v1"
     DEBUG: bool = False
 
@@ -41,7 +39,7 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def validate_supabase_database_url(cls, value: str) -> str:
-        """Ensure DATABASE_URL points to PostgreSQL / Supabase."""
+        """Normalisasi skema postgres:// ke psycopg v3 dan tolak koneksi non-PostgreSQL."""
         if not value or not isinstance(value, str):
             raise ValueError("DATABASE_URL wajib diisi dengan koneksi PostgreSQL Supabase.")
         cleaned = value.strip()
@@ -58,7 +56,7 @@ class Settings(BaseSettings):
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, value: str | list[str]) -> list[str]:
-        """Support comma-separated CORS origins in addition to JSON lists."""
+        """Dukung format CORS_ORIGINS dipisah koma selain array JSON."""
         if isinstance(value, str):
             stripped = value.strip()
             if stripped.startswith("["):
@@ -71,7 +69,6 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Return cached application settings instance."""
     return Settings()
 
 

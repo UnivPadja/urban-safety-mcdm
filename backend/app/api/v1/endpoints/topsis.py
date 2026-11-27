@@ -1,6 +1,7 @@
-"""Modul 5: TOPSIS evaluation cycle execution and ranking retrieval endpoints."""
+"""Modul 5: Endpoint eksekusi siklus pemeringkatan TOPSIS dinamis dan pengambilan hasil."""
 
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -15,6 +16,7 @@ from app.models.models import (
     CycleRankingResult,
     CycleStatus,
     EvaluationCycle,
+    SegmentObservation,
     User,
     UserRole,
 )
@@ -23,8 +25,10 @@ from app.schemas.schemas import (
     TOPSISCycleCreateRequest,
     TOPSISCycleDetailResponse,
 )
+from app.services.ahp_engine import resolve_version_criteria
 from app.services.topsis_engine import (
     TOPSISInputItem,
+    build_observation_criteria_map,
     calculate_topsis,
     evaluate_segment_eligibility,
     get_priority_category,
@@ -34,6 +38,21 @@ router = APIRouter(prefix="/topsis", tags=["TOPSIS Ranking"])
 
 
 def _build_ranking_item(res: CycleRankingResult) -> CycleRankingItemResponse:
+    norm_vals = res.normalized_values
+    if norm_vals is None and res.is_eligible:
+        norm_vals = {
+            "broken_lights": res.norm_c1,
+            "dawn_crime_count": res.norm_c2,
+            "boarding_house_count": res.norm_c3,
+        }
+    weighted_vals = res.weighted_values
+    if weighted_vals is None and res.is_eligible:
+        weighted_vals = {
+            "broken_lights": res.weighted_c1,
+            "dawn_crime_count": res.weighted_c2,
+            "boarding_house_count": res.weighted_c3,
+        }
+
     return CycleRankingItemResponse(
         id=res.id,
         segment_id=res.segment_id,
@@ -49,6 +68,8 @@ def _build_ranking_item(res: CycleRankingResult) -> CycleRankingItemResponse:
         weighted_c1=res.weighted_c1,
         weighted_c2=res.weighted_c2,
         weighted_c3=res.weighted_c3,
+        normalized_values=norm_vals,
+        weighted_values=weighted_vals,
         d_plus=res.d_plus,
         d_minus=res.d_minus,
         preference_score=res.preference_score,
@@ -100,9 +121,11 @@ def run_topsis_cycle(
         require_roles(UserRole.PENANGGUNG_JAWAB_PJU, UserRole.ADMIN)
     ),
 ) -> TOPSISCycleDetailResponse:
-    """Execute a new TOPSIS ranking cycle using the active consistent AHP weight version."""
+    """Jalankan siklus pemeringkatan TOPSIS baru memakai versi bobot AHP aktif yang konsisten."""
     active_ahp = db.scalar(
-        select(AHPWeightVersion).where(
+        select(AHPWeightVersion)
+        .options(selectinload(AHPWeightVersion.criteria))
+        .where(
             AHPWeightVersion.is_active.is_(True),
             AHPWeightVersion.is_consistent.is_(True),
         )
@@ -113,9 +136,34 @@ def run_topsis_cycle(
             detail="Belum ada versi bobot AHP yang aktif dan konsisten (CR <= 0.10).",
         )
 
+    criteria_defs = resolve_version_criteria(active_ahp)
+    criteria_codes = [c["code"] for c in criteria_defs]
+    weights = [float(c["weight"]) for c in criteria_defs]
+
+    if payload.criteria_directions is not None:
+        if len(payload.criteria_directions) != len(criteria_defs):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Jumlah criteria_directions ({len(payload.criteria_directions)}) "
+                    f"harus sama dengan jumlah kriteria AHP aktif ({len(criteria_defs)})."
+                ),
+            )
+        directions: list[Literal["max", "min"]] = [
+            "min" if d == "min" else "max" for d in payload.criteria_directions
+        ]
+    else:
+        directions = [
+            "min" if c["direction"] == "min" else "max" for c in criteria_defs
+        ]
+
     segments = db.scalars(
         select(AlleySegment)
-        .options(selectinload(AlleySegment.observation))
+        .options(
+            selectinload(AlleySegment.observation).selectinload(
+                SegmentObservation.criterion_values
+            )
+        )
         .order_by(AlleySegment.segment_code.asc())
     ).all()
     if not segments:
@@ -136,20 +184,29 @@ def run_topsis_cycle(
             observation=obs,
             reference_date=today,
             expiry_days=settings.INSPECTION_EXPIRY_DAYS,
+            required_criteria_codes=criteria_codes,
         )
         if obs is not None:
+            obs_criteria_map = build_observation_criteria_map(obs)
             snapshots_by_segment[seg.id] = {
                 "total_lights": obs.total_lights,
                 "broken_lights": obs.broken_lights,
                 "dawn_crime_count": obs.dawn_crime_count,
                 "boarding_house_count": obs.boarding_house_count,
+                "criteria_values": obs_criteria_map,
                 "inspection_date": obs.inspection_date.isoformat(),
                 "data_source": obs.data_source.value,
             }
         else:
+            obs_criteria_map = {}
             snapshots_by_segment[seg.id] = {}
 
         if is_eligible and obs is not None and obs.dawn_crime_count is not None:
+            numeric_criteria = {
+                code: float(obs_criteria_map[code])
+                for code in criteria_codes
+                if obs_criteria_map.get(code) is not None
+            }
             eligible_inputs.append(
                 TOPSISInputItem(
                     segment_id=seg.id,
@@ -157,6 +214,7 @@ def run_topsis_cycle(
                     broken_lights=obs.broken_lights,
                     dawn_crime_count=obs.dawn_crime_count,
                     boarding_house_count=obs.boarding_house_count,
+                    criteria_values=numeric_criteria,
                 )
             )
         else:
@@ -168,17 +226,14 @@ def run_topsis_cycle(
             detail="Tidak ada segmen gang yang memenuhi syarat kelayakan (eligible) untuk pemeringkatan TOPSIS.",
         )
 
-    weights = (
-        active_ahp.w_light_damage,
-        active_ahp.w_dawn_crime,
-        active_ahp.w_boarding_density,
-    )
     ranked_items = calculate_topsis(
         items=eligible_inputs,
         weights=weights,
-        criteria_directions=payload.criteria_directions,
+        criteria_directions=directions,
+        criteria_codes=criteria_codes,
     )
 
+    weights_map = {c["code"]: float(c["weight"]) for c in criteria_defs}
     cycle = EvaluationCycle(
         cycle_name=payload.cycle_name.strip(),
         executed_by=current_user.id,
@@ -187,6 +242,16 @@ def run_topsis_cycle(
             "w_light_damage": active_ahp.w_light_damage,
             "w_dawn_crime": active_ahp.w_dawn_crime,
             "w_boarding_density": active_ahp.w_boarding_density,
+            "weights_map": weights_map,
+            "criteria": [
+                {
+                    "code": c["code"],
+                    "label": c["label"],
+                    "direction": directions[idx],
+                    "weight": float(c["weight"]),
+                }
+                for idx, c in enumerate(criteria_defs)
+            ],
             "cr": active_ahp.cr,
             "version_name": active_ahp.version_name,
         },
@@ -209,6 +274,8 @@ def run_topsis_cycle(
                 weighted_c1=ranked.weighted_c1,
                 weighted_c2=ranked.weighted_c2,
                 weighted_c3=ranked.weighted_c3,
+                normalized_values=ranked.normalized_values,
+                weighted_values=ranked.weighted_values,
                 d_plus=ranked.d_plus,
                 d_minus=ranked.d_minus,
                 preference_score=ranked.preference_score,
@@ -231,6 +298,8 @@ def run_topsis_cycle(
                 weighted_c1=None,
                 weighted_c2=None,
                 weighted_c3=None,
+                normalized_values=None,
+                weighted_values=None,
                 d_plus=None,
                 d_minus=None,
                 preference_score=None,
@@ -259,7 +328,7 @@ def get_latest_topsis_cycle(
     db: Session = Depends(get_db),
     _: User | None = Depends(get_optional_user),
 ) -> TOPSISCycleDetailResponse:
-    """Retrieve the latest TOPSIS evaluation cycle ranking results."""
+    """Ambil hasil pemeringkatan dari siklus evaluasi TOPSIS terbaru."""
     cycle = db.scalar(
         select(EvaluationCycle)
         .options(
@@ -284,7 +353,7 @@ def get_topsis_cycle_detail(
     db: Session = Depends(get_db),
     _: User | None = Depends(get_optional_user),
 ) -> TOPSISCycleDetailResponse:
-    """Retrieve ranked eligible segments and ineligible segments for a cycle."""
+    """Ambil daftar segmen layak (terurut peringkat) dan segmen tidak layak untuk satu siklus."""
     cycle = db.scalar(
         select(EvaluationCycle)
         .options(

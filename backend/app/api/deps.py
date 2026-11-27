@@ -1,4 +1,4 @@
-"""Authentication and Role-Based Access Control (RBAC) FastAPI dependencies."""
+"""Dependensi autentikasi JWT dan otorisasi peran (RBAC) FastAPI."""
 
 from typing import Callable
 
@@ -15,9 +15,8 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def _resolve_user_from_token(token: str, db: Session) -> User | None:
-    """Resolve active User from either a signed JWT or a frontend seeder session token."""
+    # Terima juga token mock seeder frontend berformat mock-jwt-token-<username>-<timestamp>.
     if token.startswith("mock-jwt-token-"):
-        # Format from frontend actions.ts: mock-jwt-token-<username>-<timestamp>
         remainder = token.removeprefix("mock-jwt-token-")
         username = remainder.rsplit("-", 1)[0]
         user = db.scalar(select(User).where(User.username == username))
@@ -41,7 +40,7 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> User:
-    """Validate Bearer JWT token and return the active authenticated User."""
+    """Wajibkan Bearer token valid dan kembalikan pengguna aktif, atau tolak dengan 401."""
     if credentials is None or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -63,14 +62,14 @@ def get_optional_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> User | None:
-    """Return authenticated User if a valid Bearer token is provided, otherwise None."""
+    """Kembalikan pengguna aktif jika Bearer token disertakan, atau None untuk akses baca publik."""
     if credentials is None or not credentials.credentials:
         return None
     return _resolve_user_from_token(credentials.credentials, db)
 
 
 def require_roles(*allowed_roles: UserRole) -> Callable[[User], User]:
-    """Dependency factory enforcing RBAC role authorization."""
+    """Batasi akses endpoint hanya untuk daftar peran RBAC tertentu (tolak dengan 403)."""
 
     def _role_checker(current_user: User = Depends(get_current_user)) -> User:
         if allowed_roles and current_user.role not in allowed_roles:

@@ -1,4 +1,4 @@
-"""Database connection check, schema initialization, seeding, and table verification."""
+"""Skrip CLI untuk cek koneksi Supabase, inisialisasi 10 tabel, seed awal, dan hitung jumlah baris."""
 
 from __future__ import annotations
 
@@ -12,11 +12,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.core.config import settings
 from app.core.database import SessionLocal, engine, init_db
 from app.models.models import (
+    AHPVersionCriterion,
     AHPWeightVersion,
     AlleySegment,
     CSVImportBatch,
     CycleRankingResult,
     EvaluationCycle,
+    SegmentCriterionValue,
     SegmentObservation,
     User,
     WorklistDecision,
@@ -32,7 +34,7 @@ def _masked_url(raw_url: str) -> str:
 
 
 def setup_and_verify(skip_seed: bool = False) -> int:
-    """Verify connection, create tables, run idempotent seed, and print row counts."""
+    """Uji koneksi PostgreSQL, buat tabel yang belum ada, jalankan seeder, lalu cetak jumlah baris."""
     masked = _masked_url(settings.DATABASE_URL)
     dialect = engine.dialect.name
     print(f"[DB Setup] Target dialect : {dialect}")
@@ -50,7 +52,7 @@ def setup_and_verify(skip_seed: bool = False) -> int:
         return 1
 
     init_db()
-    print("[DB Setup] Skema 8 tabel berhasil dipastikan ada (init_db).")
+    print("[DB Setup] Skema 10 tabel berhasil dipastikan ada (init_db).")
 
     if not skip_seed:
         seed_database()
@@ -60,7 +62,9 @@ def setup_and_verify(skip_seed: bool = False) -> int:
         ("users", User),
         ("alley_segments", AlleySegment),
         ("segment_observations", SegmentObservation),
+        ("segment_criterion_values", SegmentCriterionValue),
         ("ahp_weight_versions", AHPWeightVersion),
+        ("ahp_version_criteria", AHPVersionCriterion),
         ("csv_import_batches", CSVImportBatch),
         ("evaluation_cycles", EvaluationCycle),
         ("cycle_ranking_results", CycleRankingResult),

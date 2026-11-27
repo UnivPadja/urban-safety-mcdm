@@ -1,4 +1,4 @@
-"""Idempotent database seeder for Jatinangor PJU DSS."""
+"""Seeder idempotent data awal DSS PJU Jatinangor (akun RBAC, 12 segmen OSM, observasi, AHP, dan siklus awal)."""
 
 from datetime import date, timedelta
 
@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal, init_db
 from app.core.security import hash_password
 from app.models.models import (
+    AHPVersionCriterion,
     AHPWeightVersion,
     AlleySegment,
     CorridorEnum,
@@ -19,7 +20,7 @@ from app.models.models import (
     User,
     UserRole,
 )
-from app.services.ahp_engine import calculate_ahp
+from app.services.ahp_engine import calculate_ahp, resolve_version_criteria
 from app.services.topsis_engine import (
     TOPSISInputItem,
     calculate_topsis,
@@ -28,7 +29,7 @@ from app.services.topsis_engine import (
 
 
 def seed_database(db: Session | None = None) -> None:
-    """Populate initial users, 12 Jatinangor alley segments, observations, and active AHP weights."""
+    """Isi akun awal, 12 segmen gang Jatinangor, observasi lapangan, bobot AHP aktif, dan siklus awal jika belum ada."""
     own_session = db is None
     if own_session:
         init_db()
@@ -63,7 +64,7 @@ def seed_database(db: Session | None = None) -> None:
         operator_user = user_map["operator"]
         penilai_user = user_map["penilai"]
 
-        # Multi-point OpenStreetMap road centerline coordinates following actual Jatinangor alleys
+        # Koordinat garis tengah (centerline) asli OpenStreetMap untuk 12 gang di Jatinangor.
         sample_segments = [
             {
                 "segment_code": "GG-CSK-001",
@@ -202,7 +203,7 @@ def seed_database(db: Session | None = None) -> None:
                     [107.778887, -6.937088], [107.778857, -6.937215], [107.778802, -6.937441],
                     [107.778764, -6.937596],
                 ],
-                "obs": (10, 0, 1, 11, 4),  # 0 broken lights -> demonstrates ineligible filter
+                "obs": (10, 0, 1, 11, 4),  # Sengaja 0 lampu mati untuk contoh segmen tidak layak TOPSIS.
             },
             {
                 "segment_code": "GG-HGM-003",
@@ -332,6 +333,38 @@ def seed_database(db: Session | None = None) -> None:
             db.add(existing_active_ahp)
             db.flush()
 
+            for c in ahp_res.criteria:
+                db.add(
+                    AHPVersionCriterion(
+                        ahp_version_id=existing_active_ahp.id,
+                        code=c.code,
+                        label=c.label,
+                        direction=c.direction,
+                        weight=c.weight,
+                        display_order=c.display_order,
+                    )
+                )
+            db.flush()
+        else:
+            existing_criteria = db.scalars(
+                select(AHPVersionCriterion).where(
+                    AHPVersionCriterion.ahp_version_id == existing_active_ahp.id
+                )
+            ).all()
+            if not existing_criteria:
+                for c in resolve_version_criteria(existing_active_ahp):
+                    db.add(
+                        AHPVersionCriterion(
+                            ahp_version_id=existing_active_ahp.id,
+                            code=c["code"],
+                            label=c["label"],
+                            direction=c["direction"],
+                            weight=float(c["weight"]),
+                            display_order=int(c["display_order"]),
+                        )
+                    )
+                db.flush()
+
         existing_cycle = db.scalar(select(EvaluationCycle).limit(1))
         if existing_cycle is None and existing_active_ahp is not None:
             pju_user = user_map["pju_lead"]
@@ -399,6 +432,20 @@ def seed_database(db: Session | None = None) -> None:
                         "w_light_damage": existing_active_ahp.w_light_damage,
                         "w_dawn_crime": existing_active_ahp.w_dawn_crime,
                         "w_boarding_density": existing_active_ahp.w_boarding_density,
+                        "weights_map": {
+                            "broken_lights": existing_active_ahp.w_light_damage,
+                            "dawn_crime_count": existing_active_ahp.w_dawn_crime,
+                            "boarding_house_count": existing_active_ahp.w_boarding_density,
+                        },
+                        "criteria": [
+                            {
+                                "code": c["code"],
+                                "label": c["label"],
+                                "direction": c["direction"],
+                                "weight": float(c["weight"]),
+                            }
+                            for c in resolve_version_criteria(existing_active_ahp)
+                        ],
                         "cr": existing_active_ahp.cr,
                         "version_name": existing_active_ahp.version_name,
                     },
@@ -421,6 +468,8 @@ def seed_database(db: Session | None = None) -> None:
                             weighted_c1=ranked.weighted_c1,
                             weighted_c2=ranked.weighted_c2,
                             weighted_c3=ranked.weighted_c3,
+                            normalized_values=ranked.normalized_values,
+                            weighted_values=ranked.weighted_values,
                             d_plus=ranked.d_plus,
                             d_minus=ranked.d_minus,
                             preference_score=ranked.preference_score,

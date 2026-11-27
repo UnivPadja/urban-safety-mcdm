@@ -1,4 +1,4 @@
-"""Modul 8: Evaluation cycle history and CSV worklist export endpoints."""
+"""Modul 8: Endpoint riwayat siklus evaluasi dan ekspor CSV daftar kerja final."""
 
 import csv
 import io
@@ -26,7 +26,7 @@ def list_cycle_history(
     db: Session = Depends(get_db),
     _: User | None = Depends(get_optional_user),
 ) -> list[CycleHistorySummaryResponse]:
-    """List historical TOPSIS evaluation cycles with worklist and override summary."""
+    """Tampilkan daftar riwayat siklus evaluasi TOPSIS beserta ringkasan kuota dan status override."""
     cycles = db.scalars(
         select(EvaluationCycle)
         .options(
@@ -71,7 +71,7 @@ def get_cycle_history_detail(
     db: Session = Depends(get_db),
     _: User | None = Depends(get_optional_user),
 ) -> CycleHistoryDetailResponse:
-    """Retrieve full audit detail for one evaluation cycle including rankings and worklist."""
+    """Ambil detail audit lengkap satu siklus mencakup hasil ranking dan keputusan daftar kerja."""
     cycle = db.scalar(
         select(EvaluationCycle)
         .options(
@@ -118,13 +118,25 @@ def get_cycle_history_detail(
     )
 
 
-@router.get("/cycles/{cycle_id}/export-csv")
+@router.get(
+    "/cycles/{cycle_id}/export-csv",
+    responses={
+        200: {
+            "description": "File CSV daftar kerja perbaikan final siap unduh.",
+            "content": {
+                "text/csv": {
+                    "example": "No_Urut_Kerja,Peringkat_TOPSIS,Kode_Segmen,Nama_Gang,Koridor,Skor_Preferensi,Lampu_Terpasang,Lampu_Mati,Curanmor_Dini_Hari,Jumlah_Indekos,Tanggal_Inspeksi,Status_Pilihan,Alasan_Override,Ditetapkan_Oleh,Tanggal_Penetapan\n1,1,GG-GHN-001,Gang H. Nena Utama,Gang H Nena,0.892140,11,6,7,25,2026-11-25,USULAN_SISTEM,,Penanggung Jawab PJU,2026-11-27T08:00:00+00:00\n"
+                }
+            },
+        }
+    },
+)
 def export_cycle_worklist_csv(
     cycle_id: int,
     db: Session = Depends(get_db),
     _: User | None = Depends(get_optional_user),
 ) -> StreamingResponse:
-    """Export the finalized repair worklist of an evaluation cycle to CSV."""
+    """Ekspor daftar kerja perbaikan final untuk satu siklus evaluasi ke file CSV."""
     cycle = db.scalar(
         select(EvaluationCycle)
         .options(

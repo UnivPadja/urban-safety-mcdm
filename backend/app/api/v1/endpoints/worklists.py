@@ -1,4 +1,4 @@
-"""Modul 7: Worklist proposal and override-audited finalization endpoints."""
+"""Modul 7: Endpoint usulan daftar kerja perbaikan dan finalisasi dengan audit override."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -74,7 +74,7 @@ def propose_worklist(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.PENANGGUNG_JAWAB_PJU, UserRole.ADMIN)),
 ) -> WorklistProposeResponse:
-    """Return Top-K system-proposed segments and reserve eligible candidates."""
+    """Simulasikan usulan Top-K segmen prioritas sistem beserta daftar segmen cadangan."""
     cycle = _get_cycle_with_results(db, cycle_id)
     eligible = sorted(
         (r for r in cycle.ranking_results if r.is_eligible),
@@ -111,7 +111,7 @@ def finalize_worklist(
         require_roles(UserRole.PENANGGUNG_JAWAB_PJU, UserRole.ADMIN)
     ),
 ) -> WorklistDecisionResponse:
-    """Finalize worklist selection, enforcing mandatory override justification."""
+    """Tetapkan daftar kerja final dan wajibkan alasan minimal 10 karakter jika berbeda dari usulan sistem."""
     cycle = _get_cycle_with_results(db, cycle_id)
     if (
         cycle.worklist_decision is not None
@@ -170,7 +170,7 @@ def finalize_worklist(
 def build_worklist_detail(
     db: Session, cycle: EvaluationCycle
 ) -> WorklistDetailResponse:
-    """Build detailed finalized worklist comparison including replaced system proposals."""
+    """Susun rincian daftar kerja final beserta perbandingan segmen usulan sistem yang tergantikan."""
     decision = cycle.worklist_decision
     if decision is None:
         raise HTTPException(
@@ -232,6 +232,6 @@ def get_cycle_worklist_detail(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ) -> WorklistDetailResponse:
-    """Retrieve finalized worklist decision and override comparison for a cycle."""
+    """Ambil keputusan daftar kerja final dan perbandingan override untuk satu siklus."""
     cycle = _get_cycle_with_results(db, cycle_id)
     return build_worklist_detail(db, cycle)

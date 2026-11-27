@@ -1,8 +1,8 @@
-"""Database engine, session factory, and declarative base (Supabase PostgreSQL)."""
+"""Koneksi SQLAlchemy, sesi database, dan inisialisasi skema Supabase PostgreSQL."""
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
@@ -20,11 +20,10 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 class Base(DeclarativeBase):
-    """Base declarative class for all SQLAlchemy ORM models."""
+    pass
 
 
 def get_db() -> Generator[Session, None, None]:
-    """Yield a database session per request and ensure cleanup."""
     db = SessionLocal()
     try:
         yield db
@@ -33,7 +32,17 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
-    """Create database tables if they do not exist."""
+    """Buat tabel yang belum ada dan tambahkan kolom aditif pada skema PostgreSQL."""
     from app.models import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+
+    if engine.dialect.name == "postgresql":
+        additive_migrations = [
+            "ALTER TABLE alley_segments ADD COLUMN IF NOT EXISTS pin_point JSONB",
+            "ALTER TABLE cycle_ranking_results ADD COLUMN IF NOT EXISTS normalized_values JSONB",
+            "ALTER TABLE cycle_ranking_results ADD COLUMN IF NOT EXISTS weighted_values JSONB",
+        ]
+        with engine.begin() as conn:
+            for ddl in additive_migrations:
+                conn.execute(text(ddl))

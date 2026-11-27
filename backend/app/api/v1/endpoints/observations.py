@@ -1,4 +1,4 @@
-"""Modul 3: Field observation entry and two-step CSV staging/validation endpoints."""
+"""Modul 3: Endpoint pendataan observasi lapangan dan impor CSV dua tahap (staging dan konfirmasi)."""
 
 from datetime import date
 import csv
@@ -14,10 +14,12 @@ from app.api.deps import get_optional_user, require_roles
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.models import (
+    AHPWeightVersion,
     AlleySegment,
     BatchStatus,
     CSVImportBatch,
     DataSourceEnum,
+    SegmentCriterionValue,
     SegmentObservation,
     User,
     UserRole,
@@ -33,9 +35,44 @@ from app.schemas.schemas import (
     ObservationValidationAlertItem,
     ObservationValidationSummaryResponse,
 )
+from app.services.ahp_engine import CORE_CRITERIA_CODES, resolve_version_criteria
 from app.services.csv_validator import validate_csv_observations
+from app.services.topsis_engine import build_observation_criteria_map
 
 router = APIRouter(prefix="/observations", tags=["Observations & CSV Import"])
+
+
+def _get_active_extra_criteria_codes(db: Session) -> list[str]:
+    active_ahp = db.scalar(
+        select(AHPWeightVersion)
+        .options(selectinload(AHPWeightVersion.criteria))
+        .where(
+            AHPWeightVersion.is_active.is_(True),
+            AHPWeightVersion.is_consistent.is_(True),
+        )
+        .order_by(AHPWeightVersion.created_at.desc(), AHPWeightVersion.id.desc())
+        .limit(1)
+    )
+    if active_ahp is None:
+        return []
+    criteria = resolve_version_criteria(active_ahp)
+    return [c["code"] for c in criteria if c["code"] not in CORE_CRITERIA_CODES]
+
+
+def _to_observation_brief(obs: SegmentObservation) -> ObservationBriefResponse:
+    return ObservationBriefResponse(
+        id=obs.id,
+        segment_id=obs.segment_id,
+        total_lights=obs.total_lights,
+        broken_lights=obs.broken_lights,
+        dawn_crime_count=obs.dawn_crime_count,
+        boarding_house_count=obs.boarding_house_count,
+        criteria_values=build_observation_criteria_map(obs),
+        inspection_date=obs.inspection_date,
+        data_source=obs.data_source,
+        updated_by=obs.updated_by,
+        updated_at=obs.updated_at,
+    )
 
 
 def _upsert_observation(
@@ -48,9 +85,12 @@ def _upsert_observation(
     inspection_date: date,
     data_source: DataSourceEnum,
     updated_by: int,
+    criteria_values: dict[str, float | None] | None = None,
 ) -> SegmentObservation:
     obs = db.scalar(
-        select(SegmentObservation).where(SegmentObservation.segment_id == segment_id)
+        select(SegmentObservation)
+        .options(selectinload(SegmentObservation.criterion_values))
+        .where(SegmentObservation.segment_id == segment_id)
     )
     if obs is None:
         obs = SegmentObservation(
@@ -64,6 +104,7 @@ def _upsert_observation(
             updated_by=updated_by,
         )
         db.add(obs)
+        db.flush()
     else:
         obs.total_lights = total_lights
         obs.broken_lights = broken_lights
@@ -72,6 +113,26 @@ def _upsert_observation(
         obs.inspection_date = inspection_date
         obs.data_source = data_source
         obs.updated_by = updated_by
+        db.flush()
+
+    if criteria_values:
+        existing_map = {cv.criterion_code: cv for cv in obs.criterion_values}
+        for raw_code, val in criteria_values.items():
+            code = str(raw_code).strip().lower()
+            if not code or code in CORE_CRITERIA_CODES:
+                continue
+            numeric_val = float(val) if val is not None else None
+            if code in existing_map:
+                existing_map[code].value = numeric_val
+            else:
+                db.add(
+                    SegmentCriterionValue(
+                        observation_id=obs.id,
+                        criterion_code=code,
+                        value=numeric_val,
+                    )
+                )
+
     return obs
 
 
@@ -81,7 +142,7 @@ def submit_observation_form(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(UserRole.OPERATOR, UserRole.ADMIN)),
 ) -> ObservationFormResponse:
-    """Create or update a segment observation via manual form with validation checks."""
+    """Simpan atau perbarui observasi segmen beserta nilai kriteria dinamis melalui form manual."""
     segment: AlleySegment | None = None
     if payload.segment_id is not None:
         segment = db.get(AlleySegment, payload.segment_id)
@@ -108,6 +169,7 @@ def submit_observation_form(
             "INCOMPLETE_CRIME_DATA: Nilai dawn_crime_count kosong; segmen akan tidak layak evaluasi TOPSIS sampai dilengkapi."
         )
 
+    extra_codes = _get_active_extra_criteria_codes(db)
     obs = _upsert_observation(
         db=db,
         segment_id=segment.id,
@@ -118,12 +180,27 @@ def submit_observation_form(
         inspection_date=payload.inspection_date,
         data_source=DataSourceEnum.MANUAL_FORM,
         updated_by=current_user.id,
+        criteria_values=payload.criteria_values,
     )
     db.commit()
-    db.refresh(obs)
+
+    loaded_obs = db.scalar(
+        select(SegmentObservation)
+        .options(selectinload(SegmentObservation.criterion_values))
+        .where(SegmentObservation.id == obs.id)
+    )
+    assert loaded_obs is not None
+
+    if extra_codes:
+        obs_map = build_observation_criteria_map(loaded_obs)
+        missing_extra = [c for c in extra_codes if obs_map.get(c) is None]
+        if missing_extra:
+            warnings.append(
+                f"INCOMPLETE_CRITERION_DATA: Nilai kriteria dinamis belum dilengkapi ({', '.join(missing_extra)})."
+            )
 
     return ObservationFormResponse(
-        observation=ObservationBriefResponse.model_validate(obs),
+        observation=_to_observation_brief(loaded_obs),
         warnings=warnings,
     )
 
@@ -138,7 +215,7 @@ async def upload_csv_preview(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(UserRole.OPERATOR, UserRole.ADMIN)),
 ) -> CSVUploadPreviewResponse:
-    """Upload a CSV file, run pre-commit validations, and store a staging batch."""
+    """Unggah file CSV, jalankan validasi awal (termasuk kriteria dinamis aktif), lalu simpan ke staging."""
     filename = file.filename or "uploaded_observations.csv"
     if not filename.lower().endswith(".csv"):
         raise HTTPException(
@@ -148,6 +225,7 @@ async def upload_csv_preview(
 
     raw_bytes = await file.read()
     known_codes = set(db.scalars(select(AlleySegment.segment_code)).all())
+    extra_codes = _get_active_extra_criteria_codes(db)
 
     try:
         summary = validate_csv_observations(
@@ -155,6 +233,7 @@ async def upload_csv_preview(
             known_segment_codes=known_codes,
             reference_date=date.today(),
             expiry_days=settings.INSPECTION_EXPIRY_DAYS,
+            extra_criteria_codes=extra_codes,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -192,7 +271,7 @@ def confirm_csv_batch(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(UserRole.OPERATOR, UserRole.ADMIN)),
 ) -> CSVConfirmResponse:
-    """Confirm and commit valid/corrected rows from staging into segment_observations."""
+    """Konfirmasi dan simpan baris valid/terkoreksi dari staging ke segment_observations dan segment_criterion_values."""
     batch = db.get(CSVImportBatch, batch_id)
     if batch is None:
         raise HTTPException(
@@ -209,6 +288,7 @@ def confirm_csv_batch(
         seg.segment_code: seg for seg in db.scalars(select(AlleySegment)).all()
     }
     corrections_by_row = {corr.row_number: corr for corr in payload.corrections}
+    extra_codes = _get_active_extra_criteria_codes(db)
 
     rows_to_commit: list[dict[str, Any]] = []
     skipped_error_count = 0
@@ -243,6 +323,18 @@ def confirm_csv_batch(
                         "message": "Data curanmor kosong.",
                     }
                 )
+            merged_criteria = dict(row.get("criteria_values") or {})
+            merged_criteria.update(corr.criteria_values)
+            for ec in extra_codes:
+                if merged_criteria.get(ec) is None:
+                    issues.append(
+                        {
+                            "code": "INCOMPLETE_CRITERION_DATA",
+                            "severity": "WARNING",
+                            "message": f"Nilai kriteria dinamis '{ec}' kosong.",
+                        }
+                    )
+
             row_status = "WARNING" if issues else "VALID"
             normalized_row = {
                 "row_number": row_num,
@@ -251,6 +343,7 @@ def confirm_csv_batch(
                 "broken_lights": corr.broken_lights,
                 "dawn_crime_count": corr.dawn_crime_count,
                 "boarding_house_count": corr.boarding_house_count,
+                "criteria_values": merged_criteria,
                 "inspection_date": corr.inspection_date.isoformat(),
                 "status": row_status,
                 "issues": issues,
@@ -300,6 +393,7 @@ def confirm_csv_batch(
             inspection_date=date.fromisoformat(str(item["inspection_date"])),
             data_source=DataSourceEnum.CSV_IMPORT,
             updated_by=current_user.id,
+            criteria_values=item.get("criteria_values") or {},
         )
         committed_codes.append(code)
 
@@ -321,13 +415,18 @@ def get_observation_validation_summary(
     db: Session = Depends(get_db),
     _: User | None = Depends(get_optional_user),
 ) -> ObservationValidationSummaryResponse:
-    """Return data completeness & freshness summary across all active alley segments."""
+    """Tampilkan ringkasan kelengkapan dan kesegaran data observasi pada seluruh segmen aktif."""
     segments = db.scalars(
         select(AlleySegment)
-        .options(selectinload(AlleySegment.observation))
+        .options(
+            selectinload(AlleySegment.observation).selectinload(
+                SegmentObservation.criterion_values
+            )
+        )
         .where(AlleySegment.is_active.is_(True))
         .order_by(AlleySegment.segment_code.asc())
     ).all()
+    extra_codes = _get_active_extra_criteria_codes(db)
 
     today = date.today()
     expired_items: list[ObservationValidationAlertItem] = []
@@ -379,6 +478,22 @@ def get_observation_validation_summary(
                     message="Rekap curanmor dini hari belum lengkap.",
                 )
             )
+        if extra_codes:
+            obs_map = build_observation_criteria_map(obs)
+            missing_extra = [c for c in extra_codes if obs_map.get(c) is None]
+            if missing_extra:
+                has_issue = True
+                incomplete_items.append(
+                    ObservationValidationAlertItem(
+                        segment_id=seg.id,
+                        segment_code=seg.segment_code,
+                        segment_name=seg.name,
+                        corridor=seg.corridor,
+                        inspection_date=obs.inspection_date,
+                        reason_code="INCOMPLETE_CRITERION_DATA",
+                        message=f"Nilai kriteria dinamis belum lengkap: {', '.join(missing_extra)}.",
+                    )
+                )
         if not has_issue:
             complete_and_fresh += 1
 
@@ -391,24 +506,48 @@ def get_observation_validation_summary(
     )
 
 
-@router.get("/csv-template")
+@router.get(
+    "/csv-template",
+    responses={
+        200: {
+            "description": "File template CSV siap unduh mengikuti kriteria AHP aktif.",
+            "content": {
+                "text/csv": {
+                    "example": "segment_code,total_lights,broken_lights,dawn_crime_count,boarding_house_count,inspection_date\nGG-CSK-001,12,6,5,18,2026-11-27\n"
+                }
+            },
+        }
+    },
+)
 def download_csv_template(
+    db: Session = Depends(get_db),
     _: User | None = Depends(get_optional_user),
 ) -> StreamingResponse:
-    """Download a CSV template with required observation import columns."""
+    """Unduh templat CSV dengan kolom yang otomatis menyesuaikan kriteria AHP aktif."""
+    extra_codes = _get_active_extra_criteria_codes(db)
+    headers = [
+        "segment_code",
+        "total_lights",
+        "broken_lights",
+        "dawn_crime_count",
+        "boarding_house_count",
+        "inspection_date",
+        *extra_codes,
+    ]
+    sample_row: list[Any] = [
+        "GG-CSK-001",
+        12,
+        6,
+        5,
+        18,
+        date.today().isoformat(),
+        *[2.5 for _ in extra_codes],
+    ]
+
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(
-        [
-            "segment_code",
-            "total_lights",
-            "broken_lights",
-            "dawn_crime_count",
-            "boarding_house_count",
-            "inspection_date",
-        ]
-    )
-    writer.writerow(["GG-CSK-001", 12, 6, 5, 18, date.today().isoformat()])
+    writer.writerow(headers)
+    writer.writerow(sample_row)
     buffer.seek(0)
     return StreamingResponse(
         iter([buffer.getvalue()]),
@@ -425,7 +564,7 @@ def get_csv_batch_preview(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.OPERATOR, UserRole.ADMIN)),
 ) -> CSVUploadPreviewResponse:
-    """Retrieve stored CSV staging batch preview details."""
+    """Ambil pratinjau hasil validasi batch CSV yang tersimpan di staging."""
     batch = db.get(CSVImportBatch, batch_id)
     if batch is None:
         raise HTTPException(
@@ -452,7 +591,7 @@ def cancel_csv_batch(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.OPERATOR, UserRole.ADMIN)),
 ) -> None:
-    """Cancel a pending CSV staging batch (e.g. when replacing the uploaded file)."""
+    """Batalkan batch staging CSV yang masih tertunda sebelum dikonfirmasi."""
     batch = db.get(CSVImportBatch, batch_id)
     if batch is None:
         raise HTTPException(

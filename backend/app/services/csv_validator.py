@@ -1,12 +1,14 @@
-"""CSV parsing and pre-commit validation service for field observation imports."""
+"""Parsing dan validasi awal file CSV observasi sebelum disimpan ke staging."""
 
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 import io
-from typing import Any
+from typing import Any, Sequence
 
 import pandas as pd
+
+from app.services.ahp_engine import CORE_CRITERIA_CODES
 
 REQUIRED_CSV_COLUMNS = {
     "segment_code",
@@ -20,8 +22,6 @@ REQUIRED_CSV_COLUMNS = {
 
 @dataclass(frozen=True)
 class CSVValidationSummary:
-    """Aggregated validation results for an uploaded CSV batch."""
-
     total_rows: int
     valid_rows: int
     warning_rows: int
@@ -30,11 +30,9 @@ class CSVValidationSummary:
 
 
 def _parse_int(raw: str) -> tuple[int | None, bool]:
-    """Parse integer from string; returns (value, is_missing)."""
     cleaned = raw.strip()
     if cleaned == "" or cleaned.lower() in {"nan", "null", "none", "na"}:
         return None, True
-    # Accept integer strings or clean float strings like "4.0"
     try:
         if "." in cleaned:
             as_float = float(cleaned)
@@ -46,8 +44,18 @@ def _parse_int(raw: str) -> tuple[int | None, bool]:
         raise ValueError(f"Nilai '{cleaned}' bukan bilangan bulat valid.") from exc
 
 
+def _parse_float(raw: str) -> tuple[float | None, bool]:
+    cleaned = raw.strip()
+    if cleaned == "" or cleaned.lower() in {"nan", "null", "none", "na"}:
+        return None, True
+    try:
+        val = float(cleaned)
+    except ValueError as exc:
+        raise ValueError(f"Nilai '{cleaned}' bukan angka valid.") from exc
+    return val, False
+
+
 def _parse_date(raw: str) -> date:
-    """Parse YYYY-MM-DD (or common ISO/slash formats) into a date object."""
     cleaned = raw.strip()
     if not cleaned:
         raise ValueError("Tanggal inspeksi kosong.")
@@ -64,8 +72,9 @@ def validate_csv_observations(
     known_segment_codes: set[str],
     reference_date: date,
     expiry_days: int,
+    extra_criteria_codes: Sequence[str] | None = None,
 ) -> CSVValidationSummary:
-    """Parse and validate CSV observation rows before staging into csv_import_batches."""
+    """Validasi tiap baris CSV observasi (termasuk kolom kriteria dinamis) dan tandai status VALID/WARNING/ERROR."""
     try:
         text = csv_bytes.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
@@ -88,6 +97,19 @@ def validate_csv_observations(
     if len(df) == 0:
         raise ValueError("File CSV tidak memiliki baris data.")
 
+    # Gabungkan kriteria dinamis aktif dari AHP dengan kolom tambahan yang ada di file CSV.
+    extra_codes: list[str] = []
+    if extra_criteria_codes:
+        for code in extra_criteria_codes:
+            clean_code = str(code).strip().lower()
+            if clean_code and clean_code not in CORE_CRITERIA_CODES and clean_code not in extra_codes:
+                extra_codes.append(clean_code)
+    for col in df.columns:
+        low_col = col.lower()
+        if col not in REQUIRED_CSV_COLUMNS and low_col not in extra_codes:
+            extra_codes.append(low_col)
+
+    col_lookup = {col.lower(): col for col in df.columns}
     normalized_codes = [str(val).strip().upper() for val in df["segment_code"].tolist()]
     code_counts = Counter(code for code in normalized_codes if code)
 
@@ -97,7 +119,7 @@ def validate_csv_observations(
     error_count = 0
 
     for idx, row in df.iterrows():
-        row_number = int(idx) + 2  # 1-based line number accounting for CSV header
+        row_number = int(idx) + 2
         raw_code = str(row["segment_code"]).strip().upper()
         issues: list[dict[str, str]] = []
 
@@ -199,7 +221,6 @@ def validate_csv_observations(
                 }
             )
 
-        # Missing dawn_crime_count is a WARNING during staging, but blocks TOPSIS eligibility until filled
         try:
             dawn_crime_count, missing_crime = _parse_int(str(row["dawn_crime_count"]))
             if missing_crime:
@@ -278,6 +299,52 @@ def validate_csv_observations(
                 }
             )
 
+        # Nilai kriteria dinamis kosong ditandai WARNING agar tetap bisa masuk staging.
+        criteria_values: dict[str, float | None] = {}
+        for extra_code in extra_codes:
+            actual_col = col_lookup.get(extra_code)
+            if actual_col is None:
+                criteria_values[extra_code] = None
+                issues.append(
+                    {
+                        "code": "INCOMPLETE_CRITERION_DATA",
+                        "severity": "WARNING",
+                        "message": f"Kolom kriteria dinamis '{extra_code}' tidak ada pada CSV; segmen perlu dilengkapi sebelum evaluasi TOPSIS.",
+                    }
+                )
+                continue
+            try:
+                parsed_val, is_missing = _parse_float(str(row[actual_col]))
+                if is_missing:
+                    criteria_values[extra_code] = None
+                    issues.append(
+                        {
+                            "code": "INCOMPLETE_CRITERION_DATA",
+                            "severity": "WARNING",
+                            "message": f"Nilai kriteria dinamis '{extra_code}' kosong.",
+                        }
+                    )
+                elif parsed_val is not None and parsed_val < 0:
+                    criteria_values[extra_code] = parsed_val
+                    issues.append(
+                        {
+                            "code": "INVALID_CRITERION_VALUE",
+                            "severity": "ERROR",
+                            "message": f"Nilai kriteria '{extra_code}' tidak boleh negatif.",
+                        }
+                    )
+                else:
+                    criteria_values[extra_code] = parsed_val
+            except ValueError as exc:
+                criteria_values[extra_code] = None
+                issues.append(
+                    {
+                        "code": "INVALID_CRITERION_VALUE",
+                        "severity": "ERROR",
+                        "message": f"Nilai kriteria '{extra_code}' tidak valid: {exc}",
+                    }
+                )
+
         has_error = any(issue["severity"] == "ERROR" for issue in issues)
         has_warning = any(issue["severity"] == "WARNING" for issue in issues)
         if has_error:
@@ -298,6 +365,7 @@ def validate_csv_observations(
                 "broken_lights": broken_lights,
                 "dawn_crime_count": dawn_crime_count,
                 "boarding_house_count": boarding_house_count,
+                "criteria_values": criteria_values,
                 "inspection_date": parsed_date_str,
                 "status": row_status,
                 "issues": issues,
